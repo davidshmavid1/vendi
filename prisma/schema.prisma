@@ -1,0 +1,359 @@
+// Vendi — multi-tenant vendor booking & event management platform
+// Tenant isolation is the outermost boundary: every table carries organizationId,
+// and every query in the app must filter by it before anything else.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ORGANIZER // owns/administers an Organization
+  VENDOR // scoped to their own Vendor row within an Organization
+  PLATFORM_ADMIN // cross-org support & oversight (us)
+}
+
+enum Plan {
+  FREE
+  STARTER
+  PRO
+}
+
+enum EventStatus {
+  DRAFT
+  APPLICATIONS_OPEN
+  APPLICATIONS_CLOSED
+  ACTIVE
+  COMPLETED
+  CANCELED
+}
+
+enum SpaceStatus {
+  AVAILABLE
+  SOLD_OUT
+  CLOSED
+}
+
+// Guarded transitions for this machine live in src/domain/applicationStateMachine.ts
+enum ApplicationStatus {
+  SUBMITTED
+  APPROVED
+  DENIED
+  WITHDRAWN
+}
+
+// Guarded transitions for this machine live in src/domain/bookingStateMachine.ts
+enum BookingStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  CANCELED
+  EXPIRED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+enum WaitlistStatus {
+  WAITING
+  NOTIFIED
+  CLAIMED
+  EXPIRED
+  CANCELED
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy & identity
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id   String @id @default(cuid())
+  name String
+  slug String @unique
+
+  plan Plan @default(FREE)
+
+  // Stripe Connect (destination charges): each organizer connects an account
+  // that receives the vendor's payment minus the platform's application fee.
+  stripeConnectAccountId   String?
+  stripeOnboardingComplete Boolean @default(false)
+  // Platform's cut per transaction, in basis points (500 = 5%). Configurable
+  // per org so pricing can evolve without a schema change.
+  applicationFeeBps        Int     @default(500)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users        User[]
+  vendors      Vendor[]
+  events       Event[]
+  spaces       Space[]
+  applications Application[]
+  bookings     Booking[]
+  payments     Payment[]
+  waitlist     WaitlistEntry[]
+  auditEvents  AuditEvent[]
+}
+
+model User {
+  id             String        @id @default(cuid())
+  // Nullable only for PLATFORM_ADMIN, whose access is intentionally cross-org.
+  // ORGANIZER and VENDOR users always have an organizationId, enforced in the
+  // domain layer (see src/lib/authz.ts) rather than the DB so a single admin
+  // account never needs one row per org.
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  email          String
+  hashedPassword String?
+  name           String?
+  role           Role
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vendor               Vendor?
+  reviewedApplications Application[] @relation("ApplicationReviewer")
+
+  @@unique([organizationId, email])
+  @@index([organizationId])
+}
+
+// Org-scoped vendor profile. Note: a real-world vendor may one day operate
+// across multiple organizers' markets (Phase 3 "cross-org vendor profiles").
+// For now each Vendor row — and everything booked against it — is scoped to
+// a single organization; the userId link is what a future global VendorProfile
+// would sit on top of.
+model Vendor {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  businessName String
+  businessInfo Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  applications    Application[]
+  bookings        Booking[]
+  waitlistEntries WaitlistEntry[]
+
+  @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Events & inventory
+// ---------------------------------------------------------------------------
+
+model Event {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  location    String?
+  startDate   DateTime
+  endDate     DateTime
+
+  status EventStatus @default(DRAFT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  spaces       Space[]
+  applications Application[]
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+}
+
+model Space {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  eventId String
+  event   Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  name         String
+  description  String?
+  // Price in minor currency units (cents) to avoid float rounding issues.
+  price        Int
+  totalQty     Int
+  availableQty Int
+
+  status SpaceStatus @default(AVAILABLE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookings        Booking[]
+  waitlistEntries WaitlistEntry[]
+
+  @@index([organizationId])
+  @@index([organizationId, eventId])
+}
+
+// ---------------------------------------------------------------------------
+// Applications (state machine #1)
+// ---------------------------------------------------------------------------
+
+model Application {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  vendorId String
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  eventId String
+  event   Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  status ApplicationStatus @default(SUBMITTED)
+
+  notes String?
+
+  submittedAt DateTime  @default(now())
+  reviewedAt  DateTime?
+  reviewedBy  String?
+  reviewer    User?     @relation("ApplicationReviewer", fields: [reviewedBy], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookings Booking[]
+
+  // A vendor may only have one active application per event.
+  @@unique([organizationId, vendorId, eventId])
+  @@index([organizationId])
+  @@index([organizationId, eventId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Bookings (state machine #2) & payments
+// ---------------------------------------------------------------------------
+
+model Booking {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  vendorId String
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  spaceId String
+  space   Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  // Links the booking back to the approved application that authorized it —
+  // this is what lets the domain layer guard "no booking without an
+  // APPROVED application for this event."
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id])
+
+  status BookingStatus @default(PENDING_PAYMENT)
+
+  createdAt   DateTime  @default(now())
+  confirmedAt DateTime?
+  canceledAt  DateTime?
+
+  payments Payment[]
+
+  @@index([organizationId])
+  @@index([organizationId, vendorId])
+  @@index([organizationId, spaceId, status])
+}
+
+model Payment {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  bookingId String
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  stripePaymentIntentId String @unique
+
+  amount               Int // total charged to the vendor, in cents
+  applicationFeeAmount Int // platform's cut, in cents
+  currency             String @default("usd")
+
+  status PaymentStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, bookingId])
+}
+
+// ---------------------------------------------------------------------------
+// Waitlist (Phase 2 automation, modeled from day one)
+// ---------------------------------------------------------------------------
+
+model WaitlistEntry {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  spaceId String
+  space   Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  vendorId String
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  position Int
+
+  status         WaitlistStatus @default(WAITING)
+  notifiedAt     DateTime?
+  claimExpiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([spaceId, vendorId])
+  @@index([organizationId])
+  @@index([organizationId, spaceId, position])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log — append-only source of truth for analytics (Phase 3)
+// ---------------------------------------------------------------------------
+
+model AuditEvent {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  entityType String // e.g. "Application", "Booking", "Space"
+  entityId   String
+
+  action    String // e.g. "APPLICATION_APPROVED", "BOOKING_CONFIRMED"
+  fromState String?
+  toState   String?
+
+  // Nullable: some events are system-triggered (Stripe webhook, waitlist timer).
+  actorId String?
+  payload Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([organizationId])
+  @@index([organizationId, entityType, entityId])
+  @@index([organizationId, createdAt])
+}
