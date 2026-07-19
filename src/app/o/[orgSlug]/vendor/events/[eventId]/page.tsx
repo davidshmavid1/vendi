@@ -4,6 +4,7 @@ import { requireOrgContext, requireRole, requireVendor, tenantWhere } from "@/li
 import { prisma } from "@/lib/prisma";
 import { Card, Badge } from "@/components/ui";
 import { submitApplicationAction } from "@/server/actions/applications";
+import { ApplicationFeeCheckout } from "@/components/forms/ApplicationFeeCheckout";
 
 export default async function VendorEventPage({
   params,
@@ -11,7 +12,7 @@ export default async function VendorEventPage({
   params: Promise<{ orgSlug: string; eventId: string }>;
 }) {
   const { orgSlug, eventId } = await params;
-  const { ctx } = await requireOrgContext(orgSlug);
+  const { ctx, organization } = await requireOrgContext(orgSlug);
   requireRole(ctx, ["VENDOR"]);
   requireVendor(ctx);
 
@@ -39,7 +40,20 @@ export default async function VendorEventPage({
         {event.location ? ` · ${event.location}` : ""}
       </p>
 
-      {!application && (
+      {!application && organization.vendorApplicationFee > 0 && (
+        <Card className="mt-6">
+          <p className="mb-3 text-sm text-zinc-600 dark:text-zinc-400">
+            This market charges a nonrefundable application fee.
+          </p>
+          <ApplicationFeeCheckout
+            orgSlug={orgSlug}
+            eventId={eventId}
+            fee={organization.vendorApplicationFee}
+          />
+        </Card>
+      )}
+
+      {!application && organization.vendorApplicationFee === 0 && (
         <Card className="mt-6">
           <p className="mb-3 text-sm text-zinc-600 dark:text-zinc-400">
             Submit your application to be considered for a space at this event.
@@ -52,6 +66,12 @@ export default async function VendorEventPage({
               Submit application
             </button>
           </form>
+        </Card>
+      )}
+
+      {application && application.status === "PENDING_FEE_PAYMENT" && (
+        <Card className="mt-6">
+          <Badge tone="yellow">Confirming your application fee payment…</Badge>
         </Card>
       )}
 

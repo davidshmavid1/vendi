@@ -33,9 +33,14 @@ export default async function AdminHomePage() {
                   {org._count.bookings} bookings
                 </p>
               </div>
-              <Badge tone={org.stripeOnboardingComplete ? "green" : "yellow"}>
-                {org.stripeOnboardingComplete ? "Stripe connected" : "Stripe pending"}
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge tone={org.subscriptionStatus === "ACTIVE" ? "green" : "yellow"}>
+                  {org.subscriptionStatus}
+                </Badge>
+                <Badge tone={org.stripeOnboardingComplete ? "green" : "yellow"}>
+                  {org.stripeOnboardingComplete ? "Stripe connected" : "Stripe pending"}
+                </Badge>
+              </div>
             </Card>
           </Link>
         ))}

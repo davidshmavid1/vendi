@@ -31,7 +31,11 @@ async function main() {
     data: {
       name: "Maple Street Market",
       slug: SEED_SLUG,
-      applicationFeeBps: 500,
+      applicationFeeBps: 100,
+      vendorApplicationFee: 500, // $5 to apply, for demoing the new flow
+      // Seeded as ACTIVE, bypassing real Checkout, so local testing isn't
+      // blocked behind a live subscription flow every time.
+      subscriptionStatus: "ACTIVE",
     },
   });
 
@@ -141,6 +145,7 @@ async function main() {
   console.log(`  Vendor (pending review):                                clay@vendor.test / ${PASSWORD}`);
   console.log(`  Platform admin: admin@vendi.dev / ${PASSWORD}  →  /admin/login`);
   console.log(`\nNote: connect Stripe from the organizer's dashboard before trying to book a space.`);
+  console.log(`Applying to "${event.name}" costs $5 (vendorApplicationFee) — 0% cut.`);
 }
 
 main()

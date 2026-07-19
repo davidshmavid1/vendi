@@ -44,6 +44,7 @@ enum SpaceStatus {
 
 // Guarded transitions for this machine live in src/domain/applicationStateMachine.ts
 enum ApplicationStatus {
+  PENDING_FEE_PAYMENT // initial state only when the org charges an application fee
   SUBMITTED
   APPROVED
   DENIED
@@ -63,6 +64,22 @@ enum PaymentStatus {
   SUCCEEDED
   FAILED
   REFUNDED
+}
+
+// What a Payment row is for — lets one webhook handler route to the right
+// domain confirm function without parsing Stripe metadata.
+enum PaymentPurpose {
+  BOOKING_FEE
+  APPLICATION_FEE
+}
+
+// Simplified mirror of Stripe's subscription statuses — Vendi doesn't layer
+// any business rules on top of this yet, so it's tracked, not enforced.
+enum SubscriptionStatus {
+  NONE
+  ACTIVE
+  PAST_DUE
+  CANCELED
 }
 
 enum WaitlistStatus {
@@ -88,9 +105,25 @@ model Organization {
   // that receives the vendor's payment minus the platform's application fee.
   stripeConnectAccountId   String?
   stripeOnboardingComplete Boolean @default(false)
-  // Platform's cut per transaction, in basis points (500 = 5%). Configurable
-  // per org so pricing can evolve without a schema change.
-  applicationFeeBps        Int     @default(500)
+  // Platform's cut per stall booking, in basis points (100 = 1%). Configurable
+  // per org so pricing can evolve without a schema change. Does NOT apply to
+  // the vendor application fee below — that one is deliberately 0% cut.
+  applicationFeeBps        Int     @default(100)
+
+  // Vendor application fee, in cents, org-wide (not per-event). Vendors pay
+  // this to submit an application; the platform takes no cut of it. Zero
+  // means "no fee" and skips the payment step entirely. Named distinctly from
+  // applicationFeeBps/Payment.applicationFeeAmount above, which are Stripe's
+  // own "application fee" (platform cut) vocabulary — a different concept.
+  vendorApplicationFee Int @default(0)
+
+  // Organizer's own subscription to Vendi (separate from stripeConnectAccountId,
+  // which is for the org RECEIVING vendor money — this Customer is for the
+  // org PAYING Vendi).
+  stripeCustomerId             String?
+  subscriptionStatus           SubscriptionStatus @default(NONE)
+  stripeSubscriptionId         String?
+  subscriptionCurrentPeriodEnd DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -238,6 +271,7 @@ model Application {
   updatedAt DateTime @updatedAt
 
   bookings Booking[]
+  payments Payment[]
 
   // A vendor may only have one active application per event.
   @@unique([organizationId, vendorId, eventId])
@@ -279,18 +313,27 @@ model Booking {
   @@index([organizationId, spaceId, status])
 }
 
+// A Payment is either for a Booking (stall fee) or an Application (vendor
+// application fee) — never neither, never both. Enforced in the domain layer
+// (src/domain/payments.ts, src/domain/applicationFeePayments.ts), not a DB
+// constraint, consistent with how other invariants in this codebase work.
 model Payment {
   id             String       @id @default(cuid())
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  bookingId String
-  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  purpose PaymentPurpose
+
+  bookingId String?
+  booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  applicationId String?
+  application   Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
 
   stripePaymentIntentId String @unique
 
   amount               Int // total charged to the vendor, in cents
-  applicationFeeAmount Int // platform's cut, in cents
+  applicationFeeAmount Int // platform's cut, in cents (0 for APPLICATION_FEE payments)
   currency             String @default("usd")
 
   status PaymentStatus @default(PENDING)
@@ -300,6 +343,7 @@ model Payment {
 
   @@index([organizationId])
   @@index([organizationId, bookingId])
+  @@index([organizationId, applicationId])
 }
 
 // ---------------------------------------------------------------------------

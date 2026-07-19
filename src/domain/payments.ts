@@ -51,6 +51,7 @@ export async function initiateBookingPayment(
   await prisma.payment.create({
     data: {
       organizationId: ctx.organizationId,
+      purpose: "BOOKING_FEE",
       bookingId: booking.id,
       stripePaymentIntentId: paymentIntent.id,
       amount: space.price,

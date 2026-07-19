@@ -108,7 +108,7 @@ export async function confirmBookingPayment(params: {
     const payment = await tx.payment.findUnique({
       where: { stripePaymentIntentId: params.stripePaymentIntentId },
     });
-    if (!payment) throw new NotFoundError("Payment not found for this PaymentIntent");
+    if (!payment?.bookingId) throw new NotFoundError("Booking payment not found for this PaymentIntent");
 
     if (payment.status === "SUCCEEDED") {
       const existingBooking = await tx.booking.findUniqueOrThrow({

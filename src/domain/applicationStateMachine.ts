@@ -14,6 +14,7 @@ import type { ApplicationModel, ApplicationWhereInput } from "@/generated/prisma
  * `if (status === ...)` checks across route handlers.
  */
 const TRANSITIONS: Record<ApplicationStatus, ApplicationStatus[]> = {
+  PENDING_FEE_PAYMENT: ["SUBMITTED"],
   SUBMITTED: ["APPROVED", "DENIED", "WITHDRAWN"],
   APPROVED: [],
   DENIED: [],
@@ -67,7 +68,16 @@ async function transition(params: {
   });
 }
 
-export async function submitApplication(
+/**
+ * Creates the Application row. If the org charges a vendor application fee
+ * (`Organization.vendorApplicationFee > 0`), it starts life as
+ * PENDING_FEE_PAYMENT and only becomes SUBMITTED once
+ * confirmApplicationFeePayment (webhook-only) confirms payment — mirroring
+ * exactly how Booking's PENDING_PAYMENT → CONFIRMED works. If the org doesn't
+ * charge a fee, it goes straight to SUBMITTED, preserving the original
+ * zero-friction behavior.
+ */
+export async function createPendingApplication(
   ctx: AuthContext,
   params: { eventId: string },
 ): Promise<ApplicationModel> {
@@ -75,7 +85,7 @@ export async function submitApplication(
   const { organizationId, vendorId } = ctx;
   const { eventId } = params;
 
-  const application = await prisma.$transaction(async (tx) => {
+  const { application, feeRequired } = await prisma.$transaction(async (tx) => {
     const event = await tx.event.findFirst({ where: { id: eventId, organizationId } });
     if (!event) throw new NotFoundError("Event not found");
     if (event.status !== "APPLICATIONS_OPEN") {
@@ -89,32 +99,104 @@ export async function submitApplication(
       throw new InvalidTransitionError("An application for this event already exists");
     }
 
+    const organization = await tx.organization.findFirstOrThrow({ where: { id: organizationId } });
+    const feeRequired = organization.vendorApplicationFee > 0;
+    const status = feeRequired ? "PENDING_FEE_PAYMENT" : "SUBMITTED";
+
     const created = await tx.application.create({
-      data: { organizationId, vendorId, eventId, status: "SUBMITTED" },
+      data: { organizationId, vendorId, eventId, status },
     });
 
     await writeAuditEvent(tx, {
       organizationId,
       entityType: "Application",
       entityId: created.id,
-      action: "APPLICATION_SUBMITTED",
+      action: feeRequired ? "APPLICATION_PENDING_FEE_PAYMENT" : "APPLICATION_SUBMITTED",
       fromState: null,
-      toState: "SUBMITTED",
+      toState: status,
       actorId: ctx.userId,
     });
 
-    return created;
+    return { application: created, feeRequired };
   });
 
-  await eventDispatcher.emit({
-    type: "APPLICATION_SUBMITTED",
-    organizationId,
-    applicationId: application.id,
-    vendorId,
-    eventId,
-  });
+  if (!feeRequired) {
+    await eventDispatcher.emit({
+      type: "APPLICATION_SUBMITTED",
+      organizationId,
+      applicationId: application.id,
+      vendorId,
+      eventId,
+    });
+  }
 
   return application;
+}
+
+/**
+ * Webhook-only, mirrors confirmBookingPayment in bookingStateMachine.ts:
+ * idempotent (a webhook retry against an already-SUCCEEDED Payment is a
+ * no-op), transitions PENDING_FEE_PAYMENT → SUBMITTED inside one transaction
+ * with the Payment update and the audit write. No inventory to touch, so
+ * this is simpler than the booking version.
+ */
+export async function confirmApplicationFeePayment(params: {
+  stripePaymentIntentId: string;
+}): Promise<{ application: ApplicationModel; alreadyProcessed: boolean }> {
+  const result = await prisma.$transaction(async (tx) => {
+    const payment = await tx.payment.findUnique({
+      where: { stripePaymentIntentId: params.stripePaymentIntentId },
+    });
+    if (!payment?.applicationId) {
+      throw new NotFoundError("Application fee payment not found for this PaymentIntent");
+    }
+
+    if (payment.status === "SUCCEEDED") {
+      const existingApplication = await tx.application.findUniqueOrThrow({
+        where: { id: payment.applicationId },
+      });
+      return { application: existingApplication, alreadyProcessed: true };
+    }
+
+    const application = await tx.application.findFirst({
+      where: { id: payment.applicationId, organizationId: payment.organizationId },
+    });
+    if (!application) throw new NotFoundError("Application not found");
+
+    assertLegalTransition(application.status, "SUBMITTED");
+
+    await tx.payment.update({ where: { id: payment.id }, data: { status: "SUCCEEDED" } });
+
+    const updated = await tx.application.update({
+      where: { id: application.id },
+      data: { status: "SUBMITTED" },
+    });
+
+    await writeAuditEvent(tx, {
+      organizationId: application.organizationId,
+      entityType: "Application",
+      entityId: application.id,
+      action: "APPLICATION_SUBMITTED",
+      fromState: application.status,
+      toState: "SUBMITTED",
+      actorId: null,
+      payload: { stripePaymentIntentId: params.stripePaymentIntentId },
+    });
+
+    return { application: updated, alreadyProcessed: false };
+  });
+
+  if (!result.alreadyProcessed) {
+    await eventDispatcher.emit({
+      type: "APPLICATION_SUBMITTED",
+      organizationId: result.application.organizationId,
+      applicationId: result.application.id,
+      vendorId: result.application.vendorId,
+      eventId: result.application.eventId,
+    });
+  }
+
+  return result;
 }
 
 export async function approveApplication(

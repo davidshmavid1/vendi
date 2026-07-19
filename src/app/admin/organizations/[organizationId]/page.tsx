@@ -34,12 +34,19 @@ export default async function AdminOrgDetailPage({
 
   return (
     <div className="mx-auto w-full max-w-4xl flex-1 px-6 py-12">
-      <h1 className="text-2xl font-semibold">{organization.name}</h1>
-      <p className="text-sm text-zinc-500">
-        /{organization.slug} · plan {organization.plan}
-      </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">{organization.name}</h1>
+          <p className="text-sm text-zinc-500">
+            /{organization.slug} · plan {organization.plan}
+          </p>
+        </div>
+        <Badge tone={organization.subscriptionStatus === "ACTIVE" ? "green" : "yellow"}>
+          {organization.subscriptionStatus}
+        </Badge>
+      </div>
 
-      <div className="mt-6 grid grid-cols-3 gap-4">
+      <div className="mt-6 grid grid-cols-4 gap-4">
         <Card>
           <p className="text-sm text-zinc-500">Vendors</p>
           <p className="text-2xl font-semibold">{organization._count.vendors}</p>
@@ -47,6 +54,10 @@ export default async function AdminOrgDetailPage({
         <Card>
           <p className="text-sm text-zinc-500">Bookings</p>
           <p className="text-2xl font-semibold">{organization._count.bookings}</p>
+        </Card>
+        <Card>
+          <p className="text-sm text-zinc-500">Applications</p>
+          <p className="text-2xl font-semibold">{organization._count.applications}</p>
         </Card>
         <Card>
           <p className="text-sm text-zinc-500">Gross revenue</p>

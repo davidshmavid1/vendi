@@ -2,13 +2,23 @@
 
 Multi-tenant vendor booking & event management for popup market organizers. Each
 organizer runs their own market — events, spaces, vendor applications, bookings,
-payments — fully isolated from every other organizer, with Stripe Connect
-handling the marketplace payment split.
+payments — fully isolated from every other organizer.
+
+Three separate money flows:
+
+1. **Vendor → organizer, for a stall.** Destination charge; the platform takes
+   a small cut (`Organization.applicationFeeBps`, default 1%).
+2. **Organizer → Vendi, monthly subscription.** Stripe Billing/Checkout, not
+   Connect — organizers are Vendi's own paying customers. Tracked, not yet
+   gating dashboard access.
+3. **Vendor → organizer, application fee.** Paid once, when applying — the
+   platform takes **no cut** of this one, by design (`Organization.vendorApplicationFee`,
+   org-wide, editable in Settings → Application fee; 0 means no fee).
 
 This is the **Phase 1** thin slice: multi-tenant auth + org signup → create event
-+ spaces → vendor applies → organizer approves → vendor pays via Stripe Connect →
-booking confirmed + inventory decrements. No waitlist automation yet — see
-[Roadmap](#roadmap).
++ spaces → vendor applies (optionally paying an application fee) → organizer
+approves → vendor pays for a space via Stripe Connect → booking confirmed +
+inventory decrements. No waitlist automation yet — see [Roadmap](#roadmap).
 
 ## Stack
 
@@ -63,10 +73,25 @@ booking confirmed + inventory decrements. No waitlist automation yet — see
   then delegates to the domain layer. No route handler talks to Prisma with an
   unscoped query.
 - Stripe: [`src/domain/stripeConnect.ts`](src/domain/stripeConnect.ts) (organizer
-  self-serve onboarding), [`src/domain/payments.ts`](src/domain/payments.ts)
-  (destination-charge PaymentIntent with `application_fee_amount`), and
+  self-serve Connect onboarding), [`src/domain/payments.ts`](src/domain/payments.ts)
+  (stall booking PaymentIntent), [`src/domain/applicationFeePayments.ts`](src/domain/applicationFeePayments.ts)
+  (application fee PaymentIntent, `application_fee_amount: 0`),
+  [`src/domain/subscriptions.ts`](src/domain/subscriptions.ts) (organizer
+  subscription via Checkout — a different Stripe product, Billing not Connect,
+  with its own Customer object (`Organization.stripeCustomerId`) separate from
+  the Connect account), and
   [`src/app/api/webhooks/stripe/route.ts`](src/app/api/webhooks/stripe/route.ts)
-  (signature-verified webhook — the only source of payment truth).
+  (signature-verified webhook — the only source of payment truth; looks up the
+  `Payment` row's `purpose` field to route `payment_intent.succeeded` to the
+  right confirm function, and mirrors Stripe's own subscription status onto
+  `Organization` for `checkout.session.completed`/`customer.subscription.*`).
+- `Payment.purpose` (`BOOKING_FEE` | `APPLICATION_FEE`) is how one webhook
+  handler and one `Payment` table serve both one-time payment flows without
+  duplicating the confirm-payment machinery — `bookingId`/`applicationId` are
+  both nullable, exactly one is set per row, enforced in the domain layer.
+  `Application` gained a `PENDING_FEE_PAYMENT` status ahead of `SUBMITTED`,
+  mirroring `Booking`'s `PENDING_PAYMENT` → `CONFIRMED` exactly — skipped
+  entirely when `vendorApplicationFee` is 0.
 
 ### Routing
 
@@ -114,7 +139,33 @@ Seed data (`prisma/seed.ts`, password `password123` for all):
 - Platform admin: `admin@vendi.dev` → `/admin/login`
 
 Connect Stripe from the organizer dashboard (Settings → Stripe) before trying to
-book a space — bookings are blocked with a clear error until that's done.
+book a space or pay an application fee — both are blocked with a clear error
+until that's done.
+
+**Local Stripe webhooks:** Stripe can't reach `localhost` directly, so run the
+[Stripe CLI](https://docs.stripe.com/stripe-cli) alongside `npm run dev`:
+
+```bash
+stripe login   # once, opens a browser to link your Stripe account
+stripe listen --forward-to localhost:3000/api/webhooks/stripe
+```
+
+Copy the `whsec_...` it prints into `STRIPE_WEBHOOK_SECRET` in `.env` and
+restart `npm run dev`.
+
+**One-time subscription setup:** create the $20/mo Product + Price
+(`node scripts/create-subscription-price.mjs`) and put the resulting Price ID
+in `STRIPE_SUBSCRIPTION_PRICE_ID`.
+
+**Testing Connect-gated flows without the hosted onboarding UI:** Stripe's
+real onboarding form renders inside a cross-origin iframe (with a CAPTCHA on
+some steps), which isn't automatable and shouldn't be. For local testing,
+`node scripts/create-test-connect-account.mjs` creates a fully-verified
+test-mode Connect account directly via the API (Stripe's documented test
+values — see [`docs.stripe.com/connect/testing`](https://docs.stripe.com/connect/testing)),
+and `node scripts/link-test-connect-account.mjs <orgSlug> <acct_id>` points an
+org at it. The app itself always uses real Express accounts + hosted
+onboarding for actual organizers — this is a test fixture only.
 
 **Note on migrations:** `prisma/migrations/*_init/migration.sql` is the baseline
 schema, generated via `prisma migrate diff` (no live DB needed for that). Against
