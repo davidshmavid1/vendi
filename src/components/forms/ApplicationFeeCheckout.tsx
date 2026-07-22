@@ -58,6 +58,7 @@ function PaymentForm({ orgSlug }: { orgSlug: string }) {
   const elements = useElements();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [success, setSuccess] = useState(false);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -71,19 +72,29 @@ function PaymentForm({ orgSlug }: { orgSlug: string }) {
       confirmParams: {
         return_url: `${window.location.origin}/o/${orgSlug}/vendor/dashboard`,
       },
+      redirect: "if_required",
     });
 
     if (confirmError) {
       setError(confirmError.message ?? "Payment failed");
       setSubmitting(false);
+      return;
     }
+
+    setSuccess(true);
+    setSubmitting(false);
   };
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <PaymentElement />
       <FormError error={error} />
-      <SubmitButton pending={submitting || !stripe}>Pay now</SubmitButton>
+      {success && (
+        <p className="text-sm text-green-600 dark:text-green-400">
+          Payment submitted. Your application will update as soon as Stripe confirms it.
+        </p>
+      )}
+      <SubmitButton pending={submitting || !stripe || success}>Pay now</SubmitButton>
     </form>
   );
 }
