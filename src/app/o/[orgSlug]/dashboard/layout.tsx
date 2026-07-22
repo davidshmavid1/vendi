@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { requireOrgContext, requireRole } from "@/lib/authz";
 import { logout } from "@/server/actions/auth";
+import { ShareWidget } from "@/components/ShareWidget";
 
 export default async function OrganizerDashboardLayout({
   children,
@@ -14,6 +15,7 @@ export default async function OrganizerDashboardLayout({
   requireRole(ctx, ["ORGANIZER"]);
 
   const base = `/o/${orgSlug}/dashboard`;
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 
   return (
     <div className="flex flex-1 flex-col">
@@ -21,11 +23,14 @@ export default async function OrganizerDashboardLayout({
         <div className="flex gap-5 text-sm font-medium">
           <Link href={base}>Overview</Link>
           <Link href={`${base}/events`}>Events</Link>
-          <Link href={`${base}/settings/stripe`}>Stripe</Link>
+          <Link href={`${base}/settings`}>Settings</Link>
         </div>
-        <form action={logout}>
-          <button className="text-sm text-zinc-500 hover:underline">Sign out</button>
-        </form>
+        <div className="flex items-center gap-4">
+          <ShareWidget orgSlug={orgSlug} baseUrl={baseUrl} />
+          <form action={logout}>
+            <button className="text-sm text-zinc-500 hover:underline">Sign out</button>
+          </form>
+        </div>
       </nav>
       <div className="flex flex-1 flex-col">{children}</div>
     </div>
