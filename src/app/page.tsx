@@ -19,10 +19,10 @@ export default function Home() {
           Start your market
         </Link>
         <Link
-          href="/admin/login"
+          href="/login"
           className="rounded-md border border-zinc-300 px-5 py-2.5 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
         >
-          Platform admin
+          Log in
         </Link>
       </div>
     </div>

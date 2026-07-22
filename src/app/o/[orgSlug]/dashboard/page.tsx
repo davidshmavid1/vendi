@@ -60,6 +60,21 @@ export default async function OrganizerOverviewPage({
         </Card>
       )}
 
+      {organization.subscriptionStatus !== "ACTIVE" && (
+        <Card className="mt-6 flex items-center justify-between">
+          <div>
+            <p className="font-medium">You&apos;re on the free plan</p>
+            <p className="text-sm text-zinc-500">Upgrade to unlock the full plan for your organization.</p>
+          </div>
+          <Link
+            href={`/o/${orgSlug}/dashboard/settings/billing`}
+            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white dark:bg-white dark:text-zinc-900"
+          >
+            View plans
+          </Link>
+        </Card>
+      )}
+
       <div className="mt-8 flex items-center justify-between">
         <h2 className="text-lg font-semibold">Events</h2>
         <Link href={`/o/${orgSlug}/dashboard/events`} className="text-sm hover:underline">

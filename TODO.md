@@ -4,57 +4,76 @@ Running checklist for picking this back up across sessions. Check things off
 as they get done — this isn't the long-term roadmap (see README.md's
 Phase 2/3 section for that), it's "what's actually next."
 
-## New since last pass: subscription billing + application fees
+## Live site status: mostly working, one real gap left
 
-Business model expanded to three money flows — see README.md's top section
-for the full breakdown. All built and verified locally:
+`https://vendi.events` is deployed, connected to a real Neon Postgres, and
+sign-in/sign-up work correctly. **The one thing that will not work yet:
+Stripe payments won't confirm in production**, because there's no webhook
+endpoint registered in Stripe for the live domain (confirmed via API —
+`stripe.webhookEndpoints.list()` currently returns empty). This is the exact
+same class of problem as "local payments don't confirm without `stripe
+listen` running" — except in production there's no CLI workaround, you need
+a real permanent webhook.
 
-- [x] Platform cut on stall bookings: 5% → 1% default
-- [x] Vendor application fee (org-wide, 0% platform cut) — settings page,
-      payment flow, webhook confirmation all verified with a real test payment
-- [x] Organizer → Vendi subscription ($20/mo, Stripe Checkout) — verified with
-      a real test-mode subscription synced via webhook
-- [ ] Nothing left locally on this — next real step is wiring the same env
-      vars into Vercel (below) so it works in production too
+- [ ] **Register a real Stripe webhook** (Stripe Dashboard → Developers →
+      Webhooks → Add endpoint) pointed at
+      `https://vendi.events/api/webhooks/stripe`. Subscribe it to at least:
+      `payment_intent.succeeded`, `payment_intent.payment_failed`,
+      `checkout.session.completed`, `customer.subscription.updated`,
+      `customer.subscription.deleted`.
+- [ ] Copy the `whsec_...` secret that endpoint gives you (this will be
+      **different** from the local `stripe listen` one — every registered
+      endpoint gets its own secret) into Vercel's `STRIPE_WEBHOOK_SECRET`
+      (replace whatever's there now — it's currently a leftover/incorrect
+      value, harmless only because no endpoint existed to use it yet).
+- [ ] Redeploy after changing that env var (same rule as always — env var
+      changes need a fresh build).
+- [ ] Test a real booking or application-fee payment on the live site
+      end-to-end afterward to confirm it actually flips to CONFIRMED/SUBMITTED.
 
-Note: local Stripe test mode now has a real (test-mode, harmless) Connect
-account and subscription created during verification — fine to leave, or
-clean up later from the Stripe dashboard if you want a tidier test account.
+## What's done and verified
 
-## Deployment (in progress — goal: live demo link this week)
+- [x] Repo on GitHub (private), deployed on Vercel, custom domain
+      `vendi.events` connected
+- [x] Cloud Postgres (Neon) created, schema migrated, seeded with sample data
+- [x] Three payment flows built and verified with real (test-mode) Stripe
+      calls: stall bookings (1% cut), vendor application fees (0% cut,
+      org-configurable), organizer subscriptions ($20/mo via Checkout)
+- [x] Fixed a real production bug: sign-in/sign-up were redirecting to
+      `localhost:3000` instead of the real domain — root cause was Auth.js
+      not trusting Vercel's proxy headers by default (`trustHost: true` now
+      set in `src/auth.config.ts`)
+- [x] Fixed Vercel's `DATABASE_URL` (was pointing at local Postgres, not Neon)
+- [x] All work merged into `main` via PRs (#1 payments, #2 housekeeping,
+      #3 auth fix) — `main` and `origin/main` are in sync
 
-- [x] Push code to GitHub, connect the repo to Vercel
-- [x] Fix the Vercel build (missing `postinstall` script for Prisma Client)
-- [x] Fix Vercel's commit-author-email deploy block
-- [x] Get real Stripe test keys working locally, incl. webhook secret via
-      `stripe listen` (see README's "Local Stripe webhooks" section)
-- [ ] Create a cloud Postgres — Neon or Supabase are the easiest free options
-- [ ] Apply the schema to it (`prisma migrate deploy` or `prisma db push`,
-      pointed at the cloud `DATABASE_URL`)
-- [ ] Seed it with demo data if useful (`npm run db:seed`, same `DATABASE_URL`)
-- [ ] Add environment variables in Vercel (Settings → Environment Variables):
-  - [ ] `DATABASE_URL`
-  - [ ] `AUTH_SECRET` (generate with `npx auth secret`)
-  - [ ] `NEXTAUTH_URL` and `NEXT_PUBLIC_APP_URL` — the real Vercel URL
-  - [ ] `STRIPE_SECRET_KEY` / `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` — same real
-        test-mode keys now working locally
-  - [ ] `STRIPE_SUBSCRIPTION_PRICE_ID` — same one from local `.env`
-  - [ ] `STRIPE_WEBHOOK_SECRET` — once the webhook below exists (this will be
-        a **different** `whsec_...` than the local one — each webhook
-        endpoint you register gets its own secret)
-- [ ] Set up a real Stripe webhook (Dashboard → Developers → Webhooks, not the
-      CLI) pointed at `https://<your-vercel-url>/api/webhooks/stripe`
-- [ ] Click through the full flow (signup → event → apply → pay application
-      fee → approve → pay for a space → confirm) on the live URL before the
-      demo
+## Workflow notes for next session
 
-## After hosting is working
+- **Feature branches per change now** — create a branch for any code change,
+  push it, open the PR yourself rather than expecting it merged automatically.
+- **Review-before-write rule is in `CLAUDE.md`** — changes get shown before
+  being written to disk or pushed, unless you say to proceed in auto mode.
+- **Local Postgres (`npx prisma dev`) doesn't stay running permanently** —
+  if you get a connection-refused/terminated error locally, run
+  `npx prisma dev ls` to check, `npx prisma dev -d` to restart it. This has
+  happened a few times already; it's a "just restart it" situation, not data
+  loss (data survives the restart).
+- **Prisma Studio doesn't work against the local dev database** (a real quirk
+  in that bundled tool, not your setup) — use `node scripts/view-table.mjs
+  <table>` instead for local data, or point Studio at Neon if you want the
+  full GUI (`DATABASE_URL="<neon-string>" npx prisma studio`).
+- **Scripts in `scripts/` that touch the database need `npx tsx`, not plain
+  `node`** (e.g. `view-table.mjs`, `check-booking.mjs`) — scripts that only
+  call Stripe work fine with plain `node`. Simplest rule: always use
+  `npx tsx scripts/<name>.mjs` and it'll work either way.
 
-Back to local dev/learning for a while — no rush on Phase 2 until the demo's
-done and you've spent more time with the architecture and API.
+## After the webhook is fixed
 
-- Phase 1 is feature-complete and was verified end-to-end locally (see
-  README.md and ARCHITECTURE.md).
+Back to local dev/learning — no rush on Phase 2.
+
+- Phase 1 is feature-complete, expanded with the three-payment-flow business
+  model, and verified end-to-end both locally and (pending the webhook fix
+  above) in production.
 - Phase 2 (waitlist automation, real email delivery, audit-log dashboards) —
   not started.
 - Phase 3 (cross-org vendor profiles, analytics, configurable workflows) —
