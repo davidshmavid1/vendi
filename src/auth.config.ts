@@ -12,6 +12,15 @@ export const authConfig = {
   },
   session: { strategy: "jwt" },
   providers: [],
+  // Vercel (and any reverse proxy in front of the app) terminates HTTPS and
+  // forwards the real host via X-Forwarded-Host. Auth.js refuses to trust
+  // that header by default — a real security measure against host-header
+  // spoofing on untrusted infrastructure — and falls back to a hardcoded
+  // http://localhost:3000 for constructing redirect URLs, which is exactly
+  // why sign-in/sign-up were redirecting there in production. Safe to trust
+  // here because we control the one proxy (Vercel) sitting in front of this
+  // app; locally there's no proxy at all, so this has no effect there.
+  trustHost: true,
   callbacks: {
     // These two are pure field-copying (no Prisma/bcrypt) so they're safe to
     // run on the Edge runtime. They live here — not just in src/auth.ts — so
