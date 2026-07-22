@@ -32,6 +32,7 @@ export async function initiateApplicationFeePayment(
   const paymentIntent = await stripe.paymentIntents.create({
     amount: organization.vendorApplicationFee,
     currency: "usd",
+    automatic_payment_methods: { enabled: true },
     application_fee_amount: 0,
     transfer_data: { destination: organization.stripeConnectAccountId },
     metadata: {

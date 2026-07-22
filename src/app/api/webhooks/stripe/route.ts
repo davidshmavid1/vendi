@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
         });
         if (!payment) {
           console.error("No Payment row found for succeeded PaymentIntent", paymentIntent.id);
-          break;
+          return NextResponse.json({ error: "Payment record not ready" }, { status: 500 });
         }
 
         if (payment.purpose === "APPLICATION_FEE") {
@@ -120,10 +120,14 @@ export async function POST(req: NextRequest) {
     }
     case "payment_intent.payment_failed": {
       const paymentIntent = event.data.object as Stripe.PaymentIntent;
-      await prisma.payment.updateMany({
+      const updated = await prisma.payment.updateMany({
         where: { stripePaymentIntentId: paymentIntent.id },
         data: { status: "FAILED" },
       });
+      if (updated.count === 0) {
+        console.error("No Payment row found for failed PaymentIntent", paymentIntent.id);
+        return NextResponse.json({ error: "Payment record not ready" }, { status: 500 });
+      }
       break;
     }
     case "checkout.session.completed": {

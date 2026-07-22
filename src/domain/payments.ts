@@ -39,9 +39,10 @@ export async function initiateBookingPayment(
   const paymentIntent = await stripe.paymentIntents.create({
     amount: space.price,
     currency: "usd",
+    automatic_payment_methods: { enabled: true },
     application_fee_amount: applicationFeeAmount,
     transfer_data: { destination: organization.stripeConnectAccountId },
-    metadata: { bookingId: booking.id, organizationId: ctx.organizationId },
+    metadata: { bookingId: booking.id, organizationId: ctx.organizationId, purpose: "BOOKING_FEE" },
   });
 
   if (!paymentIntent.client_secret) {
