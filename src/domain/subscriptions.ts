@@ -38,10 +38,22 @@ export async function createSubscriptionCheckoutSession(
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 
+  // Stripe Tax computes sales tax at checkout. It only charges tax in
+  // jurisdictions we hold an active tax registration for — with none
+  // registered, this calculates $0 and the customer pays the base price.
+  // Turning collection on later is a Stripe-side registration, not a code
+  // change. The price is tax-exclusive, so tax is added on top of $20
+  // rather than carved out of it.
   const session = await stripe.checkout.sessions.create({
     mode: "subscription",
     customer: stripeCustomerId,
     line_items: [{ price: priceId, quantity: 1 }],
+    automatic_tax: { enabled: true },
+    // Both are required for automatic_tax on a pre-created Customer: Stripe
+    // can't compute tax without a location, and the collected address has to
+    // persist back onto the Customer so renewal invoices stay correct.
+    billing_address_collection: "required",
+    customer_update: { address: "auto" },
     success_url: `${baseUrl}/o/${orgSlug}/dashboard/settings/billing/return`,
     cancel_url: `${baseUrl}/o/${orgSlug}/dashboard/settings/billing`,
     metadata: { organizationId: organization.id },
