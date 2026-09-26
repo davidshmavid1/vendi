@@ -1,0 +1,40 @@
+[project]
+name = "vendi-backend"
+version = "0.1.0"
+description = "Vendi backend: Django + Django Ninja API"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "django>=5.2.17,<5.3",
+    "django-ninja>=1.7.1,<2",
+    "psycopg[binary]>=3.3,<4",
+    "dj-database-url>=3.1,<4",
+    "python-dotenv>=1.2,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1,<10",
+    "pytest-django>=4.14,<5",
+    "ruff>=0.16,<0.17",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["*/migrations/*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "DJ", "S"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106"]
