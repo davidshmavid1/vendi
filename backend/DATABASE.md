@@ -5,7 +5,8 @@ conventions new models follow, how to work with migrations, and the
 **proposed** data model for later phases. Setup commands live in
 [README.md](README.md). This file covers the database rules.
 
-> **Status:** the only implemented Django model is `accounts.User`. Everything
+> **Status:** the only implemented Django model is `accounts.User` (plus
+> Django's own session and cache tables). Everything
 > under [Proposed data model](#proposed-data-model) is a design proposal. None
 > of those tables exist yet.
 
@@ -13,7 +14,7 @@ conventions new models follow, how to work with migrations, and the
 
 | Database | Owner | Migrations | Contains |
 | --- | --- | --- | --- |
-| Backend DB (`BACKEND_DATABASE_URL`, e.g. `vendi_backend_dev`) | Django | `backend/*/migrations/` | `accounts_user`, Django's `auth_*`, `django_*` tables |
+| Backend DB (`BACKEND_DATABASE_URL`, e.g. `vendi_backend_dev`) | Django | `backend/*/migrations/` | `accounts_user`, `django_session`, `vendi_cache` (rate limits), Django's `auth_*`/`django_*` tables |
 | Existing app DB (`DATABASE_URL`, Neon in production) | Prisma (Next.js) | `prisma/migrations/` | `Organization`, `User`, `Booking`, … and `_prisma_migrations` |
 | Test DB (`test_<backend db name>`) | pytest-django | created and dropped per test run | same as the backend DB |
 
@@ -105,9 +106,13 @@ Rules:
 - Never run `migrate --fake` against a database with real data, and never
   apply migrations to a remote database from a laptop.
 
-Current state: `accounts.0001_initial` only. Phase 2 added no migrations,
-because `accounts.User` has no established rule the database could enforce yet
-(see [Deferred decisions](#deferred-decisions)).
+Current state:
+
+| Migration | What it does | Reversal |
+| --- | --- | --- |
+| `accounts.0001_initial` | `accounts_user` (Phase 1) | Reversible |
+| `accounts.0002_email_login` | Checks existing rows and **stops, listing user ids**, if any have an empty email or share a normalized email (nothing is deleted or merged). Then lowercases/trims emails, drops `username`, makes `email` unique, adds `email_verified_at` and the `accounts_user_email_normalized` CHECK (`email = lower(email) AND email <> ''`). | **Irreversible once accounts exist:** re-adding `username` (NOT NULL, UNIQUE) fails on existing rows. Only roll back empty development databases. |
+| `core.0001_cache_table` | Creates `vendi_cache` for Django's database cache | Drops the table |
 
 ## Tests
 
@@ -271,7 +276,7 @@ Boundaries to keep:
 
 | Decision | Phase |
 | --- | --- |
-| Login identifier (email vs. username), email uniqueness and case-insensitivity, account linking and merging with legacy users. **Changing `accounts.User` uniqueness waits for this.** | Independent Accounts |
+| Account linking and merging with legacy users (email login, uniqueness and normalization are decided: see README → Accounts). Email-address changes. | Existing Data Migration / later accounts work |
 | Organization roles and what each may do. | Organizations & Permissions |
 | Whether an Application targets a market season or a single occurrence. Whether one approval covers many dates. | Applications |
 | Capacity model: one vendor per stall vs. quantity-based offers (legacy `Space.totalQty`). Reservation expiry length. | Event Maps / Reservations |

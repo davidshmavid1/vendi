@@ -6,6 +6,7 @@ Each domain contributes a Router; add new ones here with ``api.add_router``.
 from django.conf import settings
 from ninja import NinjaAPI
 
+from accounts.api import router as auth_router
 from core.api import router as health_router
 from core.errors import install_exception_handlers
 
@@ -19,3 +20,4 @@ api = NinjaAPI(
 install_exception_handlers(api)
 
 api.add_router("/health", health_router)
+api.add_router("/auth", auth_router)

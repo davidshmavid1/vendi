@@ -15,5 +15,9 @@ DATABASES = {"default": database_config(require_local=True)}
 
 API_DOCS_ENABLED = True
 
+FRONTEND_BASE_URL = "http://frontend.test"
+EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+DEFAULT_FROM_EMAIL = "Vendi <no-reply@vendi.test>"
+
 # Fast hashing keeps user-creation tests quick. Never use outside tests.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
