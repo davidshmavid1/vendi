@@ -124,7 +124,9 @@ backend/
     errors.py              JSON error handlers
     middleware.py, request_id.py, logging.py   request IDs in responses and logs
     schemas.py             response schemas
+    checks.py              refuses to migrate a Prisma-managed database
   accounts/                custom User model (see below)
+  DATABASE.md              database ownership, conventions, proposed data model
   tests/
 ```
 
@@ -134,12 +136,11 @@ starts. Empty placeholder apps are intentionally not created ahead of time.
 
 ## Important decisions
 
-**Separate databases.** The backend reads only `BACKEND_DATABASE_URL`, never
-`DATABASE_URL`, so it can't pick up the Next.js/Prisma (Neon) database. Django
-migrations own the backend database; Prisma keeps owning the existing app's
-database until a later migration phase. Development and test settings also
-refuse any non-local database host unless you set
-`BACKEND_ALLOW_REMOTE_DATABASE=true`, and error messages never print the URL.
+**Separate databases.** The backend has its own PostgreSQL database, owned
+by Django migrations. Prisma keeps owning the existing app's database. Guards
+stop the backend from ever using the Prisma database. Ownership, schema
+conventions, migrations, psql inspection, transactions and the proposed data
+model are in [DATABASE.md](DATABASE.md).
 
 **Custom user model now, rules later.** `accounts.User` extends Django's
 `AbstractUser` with no changes. Django requires the user model to be chosen
