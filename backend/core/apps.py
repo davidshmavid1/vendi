@@ -7,6 +7,6 @@ class CoreConfig(AppConfig):
     name = "core"
 
     def ready(self):
-        from core import request_id
+        from core import checks, request_id  # noqa: F401  (checks registers on import)
 
         request_finished.connect(request_id.clear, dispatch_uid="core.request_id.clear")
