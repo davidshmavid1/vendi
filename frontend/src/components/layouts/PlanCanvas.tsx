@@ -16,6 +16,14 @@ export type PlanStall = {
   muted?: boolean;
 };
 
+/** Blank or partly typed number fields are NaN while editing: draw them as 0
+ *  (the editor's validation still reports them and blocks saving). */
+const finite = (value: number) => (Number.isFinite(value) ? value : 0);
+
+/** Only move a stall whose position and size are real numbers; otherwise a
+ *  drag or arrow key would turn a valid X/Y into NaN. */
+const movable = (s: PlanStall) => [s.x, s.y, s.width, s.height].every(Number.isFinite);
+
 export function NumberField(props: { label: string; value: number; disabled?: boolean; min?: number; onChange: (v: number) => void }) {
   return (
     <label className="flex flex-col gap-1 text-sm">
@@ -68,7 +76,7 @@ export function PlanCanvas({
 
   function onPointerDown(event: PointerEvent<SVGGElement>, stall: PlanStall) {
     onSelect(stall.key);
-    if (!editable) return;
+    if (!editable || !movable(stall)) return;
     const point = toCanvas(event);
     if (!point) return;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -91,7 +99,7 @@ export function PlanCanvas({
     }
     const step = event.shiftKey ? 10 : 1;
     const delta = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[event.key];
-    if (!delta || !editable) return;
+    if (!delta || !editable || !movable(stall)) return;
     event.preventDefault();
     onSelect(stall.key);
     const next = clampPosition({ ...stall, x: stall.x + delta[0], y: stall.y + delta[1] }, w, h);
@@ -112,6 +120,10 @@ export function PlanCanvas({
       {stalls.map((s) => {
         const isSelected = s.key === selected;
         const bad = invalid.has(s.key);
+        const x = finite(s.x);
+        const y = finite(s.y);
+        const width = Math.max(0, finite(s.width));
+        const height = Math.max(0, finite(s.height));
         return (
           <g
             key={s.key}
@@ -129,10 +141,10 @@ export function PlanCanvas({
             onKeyDown={(e) => onKeyDown(e, s)}
           >
             <rect
-              x={s.x}
-              y={s.y}
-              width={Math.max(0, s.width)}
-              height={Math.max(0, s.height)}
+              x={x}
+              y={y}
+              width={width}
+              height={height}
               className={
                 bad
                   ? "fill-red-200 stroke-red-600"
@@ -147,9 +159,9 @@ export function PlanCanvas({
               vectorEffect="non-scaling-stroke"
             />
             <text
-              x={s.x + s.width / 2}
-              y={s.y + s.height / 2}
-              fontSize={Math.min(fontSize, s.height / 2, s.width / Math.max(2, s.label.length * 0.6))}
+              x={x + width / 2}
+              y={y + height / 2}
+              fontSize={Math.min(fontSize, height / 2, width / Math.max(2, s.label.length * 0.6))}
               textAnchor="middle"
               dominantBaseline="central"
               className="pointer-events-none fill-zinc-800"
