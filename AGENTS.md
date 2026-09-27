@@ -34,5 +34,30 @@ The Next.js project root is `frontend/`; its bundled documentation is in
 - Verify behavior with checks appropriate to the affected area, including
   regression tests for permissions, payments, and data integrity when changed.
   Report checks actually run, remaining risks, and any unverified behavior.
-- Do not commit, push, deploy, or perform destructive database operations unless
-  the user explicitly authorizes them.
+- Outside the phase workflow below, do not commit, push, or open a pull request
+  unless the user explicitly authorizes them. Deployments, PR merges, and
+  destructive database operations always require explicit authorization.
+
+## Phase completion workflow
+
+- A request to implement a Vendi phase authorizes the agent to edit files,
+  run relevant checks, commit the phase changes, push a feature branch to this
+  repository's configured remote, and create a pull request without asking for
+  additional confirmation. Merely asking to write or plan a phase prompt does
+  not authorize implementation.
+- This standing authorization replaces the approval-only commit/push/PR wording
+  in previously written phase prompts. Honor any new, explicit request to leave
+  changes uncommitted or not push or create a PR.
+- Keep the work scoped to the phase. Review the diff and stage only its changes;
+  preserve unrelated and previously staged work. Never include secrets or local
+  IDE files. Use a feature branch (default prefix `codex/`), never push directly
+  to the default branch, and do not force-push.
+- Run the relevant checks before committing. Resolve failures caused by the
+  phase. If required verification is blocked, describe the limitation and open
+  a draft PR rather than presenting the phase as fully verified.
+- Use a descriptive commit and PR title identifying the phase and its changes.
+  The PR description must explain the resulting behavior, migrations if any,
+  checks actually run, and remaining limitations. Reuse an existing PR for the
+  same phase branch instead of creating a duplicate.
+- Return the PR link when finished. Do not merge the PR or deploy the changes
+  as part of this authorization.

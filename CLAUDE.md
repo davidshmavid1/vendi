@@ -2,6 +2,11 @@
 
 ## Working agreement
 
+- For requests to implement a Vendi phase, follow the Phase completion workflow
+  in AGENTS.md. It authorizes edits, checks, commits, pushing a feature branch,
+  and creating a PR without per-step confirmation, and takes precedence over
+  the review rules below and approval-only wording in older phase prompts.
+- The following review rules apply to work outside that phase workflow.
 - Show the user the exact proposed change and get explicit confirmation
   before writing file edits to disk (Edit/Write tool calls).
 - Once written to disk, leave changes uncommitted — do not run `git commit`
