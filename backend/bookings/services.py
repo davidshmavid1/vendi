@@ -17,6 +17,7 @@ _RELATED = (
     "occurrence__market",
     "vendor_business",
     "payment_attempt",
+    "cancellation__refund",
 )
 
 

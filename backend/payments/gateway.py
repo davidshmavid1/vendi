@@ -61,6 +61,12 @@ class IntentSnapshot:
 
 
 @dataclass(frozen=True)
+class ChargeState:
+    amount_refunded: int
+    disputed: bool
+
+
+@dataclass(frozen=True)
 class RefundSnapshot:
     id: str
     status: str  # pending, requires_action, succeeded, failed, canceled
@@ -199,19 +205,48 @@ class StripeGateway:
             application_fee_amount=pi.get("application_fee_amount"),
         )
 
+    def retrieve_charge_state(self, intent_id: str) -> ChargeState:
+        """Refunded amount and dispute flag of the payment's charge, checked
+        before a cancellation refund is first sent."""
+        pi = _plain(
+            self._call(
+                lambda: self._client.v1.payment_intents.retrieve(
+                    intent_id, params={"expand": ["latest_charge"]}
+                )
+            )
+        )
+        charge = pi.get("latest_charge") or {}
+        if not isinstance(charge, dict):
+            raise ProviderError("charge_not_expanded", definitive=False)
+        return ChargeState(
+            amount_refunded=charge.get("amount_refunded") or 0,
+            disputed=bool(charge.get("disputed")),
+        )
+
     # -- Refunds -------------------------------------------------------------------------
 
     def create_refund(
-        self, *, payment_intent_id: str, amount: int, idempotency_key: str
+        self,
+        *,
+        payment_intent_id: str,
+        amount: int,
+        idempotency_key: str,
+        refund_application_fee: bool = True,
+        reason: str = "unfulfilled",
     ) -> RefundSnapshot:
-        # Destination charge: take the money back from the organizer's
-        # account and return the platform fee too, so nobody keeps any of it.
+        # Destination charge: the whole charge was transferred to the
+        # organizer and Vendi's fee collected back from them. reverse_transfer
+        # takes back from the organizer the same share of the transfer as the
+        # share of the charge refunded. refund_application_fee returns Vendi's
+        # fee to the organizer: yes for compensating refunds (nobody keeps
+        # anything), no for cancellation refunds of "amount paid minus fee"
+        # (the organizer ends at zero and Vendi keeps its fee).
         params = {
             "payment_intent": payment_intent_id,
             "amount": amount,
             "reverse_transfer": True,
-            "refund_application_fee": True,
-            "metadata": {"vendi_reason": "unfulfilled"},
+            "refund_application_fee": refund_application_fee,
+            "metadata": {"vendi_reason": reason},
         }
         refund = self._call(
             lambda: self._client.v1.refunds.create(

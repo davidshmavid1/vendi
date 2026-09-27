@@ -14,7 +14,8 @@ from ninja import Router
 
 from accounts.throttles import UserThrottle
 from bookings import services as bookings
-from bookings.models import Booking
+from bookings.cancellations import vendor_deadline
+from bookings.models import Booking, BookingStatus
 from core.auth import session_auth
 from core.pagination import paginate
 from core.schemas import ErrorOut
@@ -41,11 +42,15 @@ _ERRORS = {
 _RATES = settings.PAYMENT_RATE_LIMITS
 
 
-def booking_out(booking: Booking) -> dict:
+def booking_out(booking: Booking, *, organizer: bool = False) -> dict:
     occurrence = booking.occurrence
+    attempt = booking.payment_attempt
+    cancellation = getattr(booking, "cancellation", None)
+    refund = cancellation.refund if cancellation is not None else None
     return {
         "id": booking.pk,
         "reservation_id": booking.reservation_id,
+        "status": booking.status,
         "stall": {"id": booking.offer.stall_id, "label": booking.offer.stall.label},
         "occurrence": {
             "id": occurrence.pk,
@@ -60,13 +65,42 @@ def booking_out(booking: Booking) -> dict:
         "currency": booking.currency,
         "currency_exponent": exponent(booking.currency),
         "payment_required": booking.payment_required,
-        "paid_at": booking.payment_attempt.succeeded_at if booking.payment_attempt else None,
+        "paid_minor": attempt.amount_minor if attempt else 0,
+        "fee_minor": attempt.application_fee_minor if attempt else 0,
+        "paid_at": attempt.succeeded_at if attempt else None,
         "created_at": booking.created_at,
+        "cancelled_at": booking.cancelled_at,
+        "terms": {
+            "captured": booking.policy_captured_at is not None,
+            "vendor_cutoff_hours": booking.policy_vendor_cutoff_hours,
+            "vendor_deadline": vendor_deadline(booking, occurrence),
+        },
+        "cancellation": {
+            "kind": cancellation.kind,
+            "reason": cancellation.reason,
+            "requested_at": cancellation.requested_at,
+            "completed_at": cancellation.completed_at,
+            "refund_rule": cancellation.refund_rule,
+            "refund_entitlement_minor": cancellation.refund_entitlement_minor,
+            "internal_note": cancellation.internal_note if organizer else None,
+        }
+        if cancellation is not None
+        else None,
+        "refund": {
+            "status": refund.status,
+            "amount_minor": refund.amount_minor,
+            "currency": refund.currency,
+            "completed_at": refund.completed_at,
+        }
+        if refund is not None
+        else None,
     }
 
 
 def _state(state: services.PaymentState, now) -> str:
     attempt, refund = state.attempt, state.refund
+    if state.booking is not None and state.booking.status == BookingStatus.CANCELLED:
+        return "CANCELLED"
     if state.booking is not None or state.reservation.status == ReservationStatus.CONFIRMED:
         return "BOOKED"
     if attempt and attempt.fulfillment == Fulfillment.UNFULFILLED:
@@ -223,7 +257,7 @@ def organization_bookings(
         request.auth, organization_id, market_id=market_id, occurrence_id=occurrence_id
     )
     items, next_cursor = paginate(queryset, cursor=cursor, limit=limit)
-    return {"items": [booking_out(b) for b in items], "next_cursor": next_cursor}
+    return {"items": [booking_out(b, organizer=True) for b in items], "next_cursor": next_cursor}
 
 
 @webhook_router.post(

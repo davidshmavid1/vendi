@@ -36,6 +36,9 @@ class ReservationStatus(models.TextChoices):
     EXPIRED = "EXPIRED", "Expired"
     RELEASED = "RELEASED", "Released"
     CONFIRMED = "CONFIRMED", "Confirmed"
+    # Ended by a booking or date cancellation (Phase 14): a cancelled booking
+    # keeps its confirmed_at for history. Never occupies inventory.
+    CANCELLED = "CANCELLED", "Cancelled"
 
 
 # Statuses that occupy inventory. HELD rows past ``expires_at`` (and not
@@ -98,6 +101,13 @@ class Reservation(models.Model):
         related_name="+",
     )
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    # Cancellation terms offered with this hold (Phase 14), copied from the
+    # market when the hold was taken and onto the booking when it's confirmed.
+    # ``policy_captured_at`` null: taken before policies existed (no terms).
+    # ``policy_vendor_cutoff_hours`` null: the vendor can't cancel on their own.
+    policy_captured_at = models.DateTimeField(null=True, blank=True)
+    policy_vendor_cutoff_hours = models.PositiveIntegerField(null=True, blank=True)
     # A checkout for this hold is open or its outcome is unknown (Phase 13).
     payment_pending = models.BooleanField(default=False)
     created_at = models.DateTimeField()
@@ -157,9 +167,14 @@ class Reservation(models.Model):
                 )
                 & (
                     Q(status="CONFIRMED", confirmed_at__isnull=False)
-                    | (~Q(status="CONFIRMED") & Q(confirmed_at__isnull=True))
+                    | Q(status="CANCELLED")  # a cancelled booking keeps confirmed_at
+                    | (~Q(status__in=["CONFIRMED", "CANCELLED"]) & Q(confirmed_at__isnull=True))
+                )
+                & (
+                    Q(status="CANCELLED", cancelled_at__isnull=False)
+                    | (~Q(status="CANCELLED") & Q(cancelled_at__isnull=True))
                 ),
-                name="reservations_lifecycle_fields_match",
+                name="reservations_lifecycle_fields_match_v2",
             ),
             models.CheckConstraint(
                 condition=Q(payment_pending=False) | Q(status="HELD"),

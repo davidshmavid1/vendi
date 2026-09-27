@@ -6,11 +6,15 @@ scheduler exists, an operator runs it; see README -> Payments -> Recovery.
 
 from django.core.management.base import BaseCommand
 
+from bookings.cancellations import process_occurrence_cancellations
 from payments.services import reconcile
 
 
 class Command(BaseCommand):
-    help = "Reconcile open payment attempts, refunds and webhook events with Stripe."
+    help = (
+        "Process cancelled dates' pending work, then reconcile open payment attempts, "
+        "refunds and webhook events with Stripe."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -18,9 +22,15 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        counts = reconcile(limit=max(1, options["limit"]))
+        limit = max(1, options["limit"])
+        # Date cancellations first: they may create refunds that reconcile sends.
+        cancellations = process_occurrence_cancellations(limit=limit)
+        counts = {f"cancellation_{key}": value for key, value in cancellations.items()}
+        counts.update(reconcile(limit=limit))
         self.stdout.write(" ".join(f"{key}={value}" for key, value in counts.items()))
         if counts["needs_operator"]:
             self.stderr.write(
-                f"{counts['needs_operator']} refund(s) failed at Stripe and need an operator."
+                f"{counts['needs_operator']} refund(s) need an operator (failed at Stripe, or "
+                "flagged for review: disputed, refunded outside Vendi, or over the refundable "
+                "amount)."
             )

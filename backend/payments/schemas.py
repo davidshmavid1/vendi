@@ -9,6 +9,7 @@ from reservations.schemas import ReservationDate, ReservationOut, ReservationSta
 # payment attempt, booking and refund (see api._state).
 PaymentStateName = Literal[
     "HOLDING",  # held, not paid yet
+    "CANCELLED",  # booked, then cancelled (see booking.refund for the money)
     "CHECKOUT_OPEN",  # a Checkout Session can be paid now
     "PROCESSING",  # outcome not known yet (never treat as paid)
     "BOOKED",
@@ -47,9 +48,41 @@ class BookingBusiness(Schema):
     name: str
 
 
+class BookingTerms(Schema):
+    """The cancellation terms this booking was made under (Phase 14)."""
+
+    # False: booked before terms existed; vendors can't cancel it online.
+    captured: bool
+    vendor_cutoff_hours: int | None
+    # Vendors may cancel strictly before this instant (null: not offered).
+    vendor_deadline: datetime | None
+
+
+class BookingRefundOut(Schema):
+    # REQUESTED/PENDING: in progress (never "done" until Stripe says so);
+    # REVIEW/FAILED/CANCELED: an operator is handling it.
+    status: Literal["REQUESTED", "PENDING", "SUCCEEDED", "FAILED", "CANCELED", "REVIEW"]
+    amount_minor: int
+    currency: str
+    completed_at: datetime | None
+
+
+class BookingCancellationOut(Schema):
+    kind: Literal["VENDOR", "ORGANIZER", "EVENT"]
+    reason: str
+    requested_at: datetime
+    completed_at: datetime
+    refund_rule: Literal["PAID_MINUS_FEE", "NO_PAYMENT"]
+    refund_entitlement_minor: int
+    # Organizer views only; always null for vendors.
+    internal_note: str | None
+
+
 class BookingOut(Schema):
     id: int
     reservation_id: int
+    # Booking state only; the refund has its own status below.
+    status: Literal["CONFIRMED", "CANCELLED"]
     stall: ReservationStall
     occurrence: ReservationDate
     vendor_business: BookingBusiness
@@ -57,8 +90,15 @@ class BookingOut(Schema):
     currency: str
     currency_exponent: int
     payment_required: bool
+    # Total paid (stall + Vendi's fee) and the fee, when paid.
+    paid_minor: int
+    fee_minor: int
     paid_at: datetime | None
     created_at: datetime
+    cancelled_at: datetime | None
+    terms: BookingTerms
+    cancellation: BookingCancellationOut | None
+    refund: BookingRefundOut | None
 
 
 class BookingPage(Schema):

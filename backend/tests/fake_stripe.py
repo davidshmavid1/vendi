@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 from payments.gateway import (
     AccountSnapshot,
+    ChargeState,
     IntentSnapshot,
     ProviderError,
     RefundSnapshot,
@@ -39,6 +40,8 @@ class FakeStripe:
         self.calls: list[str] = []
         self.failures: dict[str, list[str]] = {}
         self.refund_status = "pending"
+        self.refund_params: dict[str, dict] = {}
+        self.disputed: dict[str, bool] = {}
         self.accounts = {"acct_test123": AccountSnapshot("acct_test123", True, False)}
         self._verifier = StripeGateway("", WEBHOOK_SECRET)
         self._n = 0
@@ -173,16 +176,64 @@ class FakeStripe:
     def retrieve_payment_intent(self, intent_id):
         return self._around("retrieve_intent", lambda: self.intents[intent_id])
 
-    def create_refund(self, *, payment_intent_id, amount, idempotency_key):
+    def create_refund(
+        self,
+        *,
+        payment_intent_id,
+        amount,
+        idempotency_key,
+        refund_application_fee=True,
+        reason="unfulfilled",
+    ):
+        params = {
+            "payment_intent": payment_intent_id,
+            "amount": amount,
+            "refund_application_fee": refund_application_fee,
+            "reason": reason,
+        }
+
         def do():
             if idempotency_key in self.by_key:
-                return self.refunds[self.by_key[idempotency_key][0]]
+                refund_id, original = self.by_key[idempotency_key]
+                if original != params:
+                    raise ProviderError("idempotency_error", definitive=False)
+                return self.refunds[refund_id]
+            if self.disputed.get(payment_intent_id):
+                raise ProviderError("stripe_charge_disputed", definitive=True)
+            if (
+                self.amount_refunded(payment_intent_id) + amount
+                > self.intents[payment_intent_id].amount_received
+            ):
+                raise ProviderError("stripe_charge_already_refunded", definitive=True)
             refund = RefundSnapshot(self._id("re"), self.refund_status, amount, payment_intent_id)
             self.refunds[refund.id] = refund
-            self.by_key[idempotency_key] = (refund.id, {})
+            self.refund_params[refund.id] = params
+            self.by_key[idempotency_key] = (refund.id, params)
             return refund
 
         return self._around("create_refund", do)
+
+    def amount_refunded(self, payment_intent_id) -> int:
+        return sum(
+            r.amount
+            for r in self.refunds.values()
+            if r.payment_intent_id == payment_intent_id and r.status in ("pending", "succeeded")
+        )
+
+    def external_refund(self, payment_intent_id, amount, status="succeeded") -> str:
+        """Someone refunds in the Stripe Dashboard."""
+        refund = RefundSnapshot(self._id("re"), status, amount, payment_intent_id)
+        self.refunds[refund.id] = refund
+        return refund.id
+
+    def retrieve_charge_state(self, intent_id):
+        def do():
+            return ChargeState(
+                amount_refunded=self.amount_refunded(intent_id),
+                disputed=bool(self.disputed.get(intent_id)),
+            )
+
+        return self._around("retrieve_charge", do)
 
     def retrieve_refund(self, refund_id):
         return self._around("retrieve_refund", lambda: self.refunds[refund_id])
