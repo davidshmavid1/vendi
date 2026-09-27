@@ -279,8 +279,28 @@ Phase 11 adds stall plans (layout versions) per market and prices per date.
 - **Public view:** `/markets/[marketId]/dates/[occurrenceId]` ("Date details and stalls") shows:
   - the published plan, a stall detail panel ("View stall details"), and an equivalent table for keyboard and screen-reader users;
   - stalls not offered on that date as "Not offered", with a note that prices exclude taxes or fees and listed stalls aren't reserved;
-  - no Reserve or Pay actions yet.
+  - no Pay actions; held stalls show "currently taken" (Phase 12).
 - **Money:** prices are integer minor units from the API, formatted with the date's `currency_exponent` (`src/lib/layouts/money.ts`), for example `$25.00` or `¥2,500`. Typed prices are parsed with string arithmetic, never floats.
+
+## Stall holds (Django-backed)
+
+Phase 12 lets an approved vendor hold one stall per date before paying (payment comes in a later phase).
+
+- **Where:**
+  - An approved application (`/vendor/businesses/[businessId]/applications/[applicationId]`) links to **Choose a stall** at `…/stall`.
+  - The page shows the date's published plan and a table of stalls marked available, taken or not offered. Availability refreshes every 20 seconds.
+- **Holding:**
+  - Only the business owner sees **Hold this stall**; members see the hold read-only.
+  - The hold shows a countdown computed from the server's `expires_at` and `server_time` (`src/lib/reservations/logic.ts`), so a wrong device clock doesn't matter.
+  - Reloading the page recovers the current hold from the API.
+  - When the timer reaches zero the page says the hold expired and refreshes from the server.
+- **Failures:**
+  - A stall taken meanwhile shows "Someone else just took that stall".
+  - A second hold for the same date says to release the first.
+  - A lost response offers **Try again**, which resends the same request key, so it returns the original hold instead of taking a second one.
+- **Release** asks for confirmation.
+- There is **no payment or booking action**; the page says a hold is temporary and not a booking.
+- **Public date page:** stalls held or confirmed by anyone show "currently taken", without saying by whom (`/public/occurrences/{id}/stall-availability`).
 
 ## Hard requirements, and where they're enforced
 

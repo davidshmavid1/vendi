@@ -746,9 +746,9 @@ Both demo accounts use the password in `seed_demo_markets`. It needs `DEBUG`;
 ## Stall layouts and pricing
 
 Organizers draw a market's stall plan once and reuse it across dates, then set
-prices per date (`layouts/`). This **defines sellable spaces only**. There's
-no availability, hold, booking or payment state, and a listed stall isn't a
-promise it can be booked later.
+prices per date (`layouts/`). This **defines sellable spaces only**. Holds
+are in `reservations/` (see Stall reservations), and a listed stall isn't a
+promise it can be booked.
 
 **Models:**
 
@@ -839,6 +839,84 @@ curl "$API/public/occurrences/7/layout"
 - **Snapshot** the agreed `price_minor` and `currency` on the reservation, so later price edits don't change what was agreed.
 - Decide then whether a date with active reservations may be unpublished, switch versions or disable offers. Nothing references offers yet, so no protection exists here.
 - Application approval doesn't assign a stall; selection and allocation rules are for later phases.
+
+## Stall reservations
+
+A vendor whose application for a date is approved can **hold** one of that
+date's stalls for a short time (`reservations/`). A hold sets the stall aside
+at the price shown. It is **not a booking** and no money moves. Phase 13's
+payment flow turns a hold into a confirmed reservation.
+
+**Lifecycle** (`Reservation.status`):
+
+```
+HELD ──(expires_at passes)──> EXPIRED
+  │ └──(owner releases)─────> RELEASED
+  └──(confirm_hold, internal)> CONFIRMED
+```
+
+- EXPIRED, RELEASED and CONFIRMED are final. Reservations are never deleted, and a hold is never revived or extended.
+- **Only HELD and CONFIRMED occupy inventory.** To switch stalls, release, then take a new hold.
+- `price_minor` and `currency` are copied from the locked `StallOffer` when the hold is taken. Later price edits don't change it.
+- The hold lasts `RESERVATION_HOLD_SECONDS` (default 900, 15 minutes). `expires_at` is set by the server, and responses include `server_time`, so clients count down without trusting their own clock.
+
+**Database guarantees:**
+- Partial unique indexes on `offer` and on `(vendor_business, occurrence)` where `status IN ('HELD','CONFIRMED')` mean one occupying reservation per stall per date and one per business per date.
+  - The predicate doesn't depend on the clock, so a HELD row past `expires_at` still occupies the index until it is switched to EXPIRED. Every operation that could collide with it does that first (see Expiration).
+- Composite foreign keys make the offer, application, business and date agree: `(offer, occurrence)` → StallOffer and `(application, occurrence, vendor_business)` → Application.
+- CHECK constraints: price range, supported currency, `expires_at > created_at`, and each final state's timestamp set exactly when in that state.
+
+**Locking:**
+- Every write locks the date first (`EventOccurrence … FOR NO KEY UPDATE`, the same first lock Phase 11 layout saves take), then the offer or the reservation.
+- One lock order means concurrent claims on a stall, several claims by one business, release racing a claim, and confirmation racing release or expiry are serialized without deadlocks. `tests/test_reservations_concurrency.py` runs these races on separate connections.
+- If a constraint still fires (it shouldn't under the lock), the service turns it into `409 hold_conflict` rather than a 500.
+
+**Taking a hold:** `POST /api/v1/vendors/{business}/reservations` with
+`{"offer_id": …, "request_key": "…"}`. Only the business's **OWNER** can take a hold; members can view.
+
+The server checks, under the lock:
+- a verified email;
+- an APPROVED application for that business and date;
+- a published market, and a scheduled date that hasn't started;
+- a published date layout whose selected version contains the stall, with an enabled offer;
+- no organization restriction (`moderation`);
+- the business holds nothing else that date (`409 hold_exists`, with the existing `reservation_id`);
+- the stall is free (`409 stall_unavailable`).
+
+It returns 201. Holds are rate-limited (`RESERVATION_RATE_LIMITS["hold_user"]`, 30/hour per account).
+
+**Idempotency:** `request_key` (1–64 of `A–Z a–z 0–9 _ -`) is unique per account and business.
+- Sending the same key for the same offer returns the original reservation with 200, in whatever state it's in now. It never re-takes or extends a hold.
+- The same key for a different offer is `409 request_key_reused`.
+- Clients send a fresh key per attempt and reuse it only to retry an attempt whose response was lost.
+
+**Expiration without a job:**
+- Before any claim, release or confirmation, the service switches that date's lapsed holds to EXPIRED under the date's lock (`expired_at = expires_at`).
+- Reads report a lapsed HELD row as `EXPIRED` even before it's switched.
+- `uv run python manage.py expire_holds` does the same for every date. It is optional housekeeping, safe to run at any time or repeatedly, and nothing depends on it.
+
+**Release:** `POST …/reservations/{id}/release` (OWNER).
+- A HELD reservation becomes RELEASED.
+- Releasing an already released or expired one returns it unchanged.
+- A CONFIRMED one returns `409 reservation_confirmed`.
+- Another business's reservation is 404.
+- Restrictions don't block viewing or releasing.
+
+**Reading:**
+- `GET …/reservations` (filters `occurrence_id`, `status`; cursor pagination) and `GET …/reservations/{id}`, for any member of the business.
+- `GET /api/v1/public/occurrences/{id}/stall-availability` returns `available`, `unavailable` or `not_offered` per stall of a published layout. It never says who holds a stall.
+
+**Layout changes while stalls are reserved** (Phase 11 operations):
+- While any reservation on a date occupies a stall, saving that date with a different layout version returns `409 layout_in_use`.
+- Disabling an occupied stall's offer returns `409 offer_reserved`.
+- Price edits are allowed and never affect existing reservations.
+- Unpublishing the layout, archiving the market, cancelling the date, or a new restriction stops new holds but leaves existing ones in place.
+
+**Phase 13 contract: `reservations.services.confirm_hold(reservation_id)`.**
+- It's an internal operation with no endpoint, and clients can never set CONFIRMED.
+- It locks the date, expires lapsed holds, locks the reservation and, if it is still HELD with time left, sets CONFIRMED and `confirmed_at`, then returns the reservation.
+- A lapsed hold raises `409 hold_expired`; the EXPIRED switch is still committed, so the stall is free for others. Any other state raises `409 hold_not_active`.
+- A caller that has already taken payment must handle those errors (e.g. refund). Confirming a CONFIRMED reservation raises `hold_not_active`, so callers must check the state first if they need idempotency.
 
 ## Checks and tests
 
