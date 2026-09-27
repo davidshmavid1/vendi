@@ -140,7 +140,9 @@ class FakeStripe:
                 id=self._id("cs"),
                 status="open",
                 payment_status="unpaid",
-                amount_total=item["unit_amount"],
+                amount_total=sum(
+                    li["price_data"]["unit_amount"] * li["quantity"] for li in params["line_items"]
+                ),
                 currency=item["currency"].upper(),
                 livemode=False,
                 url=f"https://checkout.stripe.test/{self._n}",

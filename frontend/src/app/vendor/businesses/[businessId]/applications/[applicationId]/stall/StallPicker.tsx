@@ -15,7 +15,8 @@ import { physicalSize, type PublicLayout } from "@/lib/layouts/types";
 import { clockOffsetMs, formatCountdown, newRequestKey, secondsLeft } from "@/lib/reservations/logic";
 import type { Availability, Reservation } from "@/lib/reservations/types";
 import { isCheckoutUrl } from "@/lib/payments/logic";
-import type { PaymentStatus } from "@/lib/payments/types";
+import type { CheckoutQuote, PaymentStatus } from "@/lib/payments/types";
+import { FeeBreakdown } from "@/components/payments/FeeBreakdown";
 
 type Props = { businessId: number; applicationId: number };
 type Attempt = { offerId: number; key: string };
@@ -168,6 +169,20 @@ export function StallPicker({ businessId, applicationId }: Props) {
 
   const paymentPage = hold ? `/vendor/businesses/${businessId}/reservations/${hold.id}/payment` : null;
 
+  // What checkout will charge (stall + Vendi's fee on top), shown before paying.
+  const [quote, setQuote] = useState<CheckoutQuote | null>(null);
+  const quoteFor = hold?.status === "HELD" && hold.price_minor > 0 && !hold.payment_pending ? hold.id : null;
+  useEffect(() => {
+    if (quoteFor === null) return;
+    let cancelled = false;
+    void apiGet<PaymentStatus>(`${base}/${quoteFor}/payment`).then((result) => {
+      if (!cancelled) setQuote(result.ok ? result.data.quote : null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [base, quoteFor]);
+
   /** Start (or resume) Stripe Checkout; the server reuses an open session. */
   async function pay() {
     if (!hold || busy) return;
@@ -302,6 +317,17 @@ export function StallPicker({ businessId, applicationId }: Props) {
                       )}
                     </div>
                   </div>
+                  {quoteFor !== null && quote && (
+                    <div className="mt-3 max-w-xs">
+                      <FeeBreakdown
+                        stall={quote.stall_price_minor}
+                        fee={quote.fee_minor}
+                        total={quote.total_minor}
+                        currency={quote.currency}
+                        exponent={quote.currency_exponent}
+                      />
+                    </div>
+                  )}
                   {hold.status === "HELD" && (
                     <p className="mt-3 text-xs text-zinc-500">
                       {paymentPending

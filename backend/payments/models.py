@@ -107,10 +107,14 @@ class PaymentAttempt(models.Model):
     # Provider context, fixed when the attempt is created.
     livemode = models.BooleanField()
     destination_account_id = models.CharField(max_length=64)
-    # Snapshot from the reservation (never from the client).
+    # Snapshot from the reservation (never from the client). ``amount_minor``
+    # is the total charged. With ``fee_on_top`` (every attempt since the
+    # fee-on-top change) that is the stall price plus Vendi's fee; older
+    # attempts charged the stall price with the fee taken out of it.
     amount_minor = models.BigIntegerField()
     currency = models.CharField(max_length=3)
     application_fee_minor = models.BigIntegerField()
+    fee_on_top = models.BooleanField(default=False)
     description = models.CharField(max_length=200)
     # Sent with every create call, so retries return the same session.
     idempotency_key = models.CharField(max_length=64, unique=True)
@@ -161,7 +165,8 @@ class PaymentAttempt(models.Model):
                 condition=Q(status__in=AttemptStatus.values), name="payments_attempt_status_valid"
             ),
             models.CheckConstraint(
-                condition=Q(amount_minor__gt=0, amount_minor__lte=MAX_PRICE_MINOR),
+                # A stall price plus a fee of at most 100%.
+                condition=Q(amount_minor__gt=0, amount_minor__lte=2 * MAX_PRICE_MINOR),
                 name="payments_attempt_amount_range",
             ),
             models.CheckConstraint(
@@ -195,6 +200,12 @@ class PaymentAttempt(models.Model):
 
     def __str__(self):
         return f"PaymentAttempt {self.pk} ({self.status})"
+
+    @property
+    def stall_price_minor(self) -> int:
+        return (
+            self.amount_minor - self.application_fee_minor if self.fee_on_top else self.amount_minor
+        )
 
 
 class RefundStatus(models.TextChoices):
