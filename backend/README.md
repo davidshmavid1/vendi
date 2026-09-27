@@ -578,9 +578,8 @@ Moderation restrictions don't affect browsing.
 
 Drafts and archived markets, and their dates, return `404` publicly.
 
-**Next phases:** Applications (Phase 10) and stalls and bookings (Phases
-11–12) will reference `EventOccurrence`, and must call the moderation
-participation policy.
+**Next phases:** stalls and bookings (Phases 11–12) will reference
+`EventOccurrence`, and must call the moderation participation policy.
 
 ## Market discovery
 
@@ -626,6 +625,123 @@ search service, with a documented deployment change.
 a demo organizer and 5 published markets with weekly dates (one without
 coordinates). It refuses to run unless `DEBUG` is on. **Never run it against
 production.**
+
+## Vendor applications
+
+A vendor business applies to **one event date** (`EventOccurrence`); the
+operating organization reviews it (`applications/`). Applying uses the shared
+vendor business and never creates accounts, organization memberships or
+duplicate vendor profiles. **Approval does not reserve a stall or take
+payment**; those come in later phases.
+
+**Models:**
+
+- `ApplicationIntake`, one per date:
+  - `enabled`, optional `opens_at`/`closes_at`, and vendor-facing `instructions`;
+  - `questions`, with `questions_version` bumped whenever the questions change.
+- `Application`, unique per (date, vendor business), a database constraint:
+  - `vendor_business` (the authoritative identity) and `submitted_by`;
+  - `status`, `answers`, and a **copy of the questions** as they were when it was submitted, with their version;
+  - a `vendor_snapshot` (name, category, description, contact email, phone, website, city, region);
+  - lifecycle timestamps, `decided_by`, and a vendor-visible `decision_message`.
+- `ApplicationEvent`: append-only history of every status change, with its actor and time.
+
+Applications are never deleted.
+
+**Snapshots:** editing the questions later, or editing the business profile,
+changes neither what an application shows as asked nor what reviewers saw.
+The snapshot is a record only. It isn't editable and isn't a second profile;
+`vendor_business_id` always points at the live business.
+
+**Questions** (at most 20). Each has a stable organizer-chosen `id`
+(`[a-z0-9][a-z0-9_-]{0,39}`), a `label` (max 300 characters) and `required`.
+
+| Type | Answer |
+| --- | --- |
+| `short_text` | Text, max 200 characters |
+| `long_text` | Text, max 2000 characters |
+| `single_choice` | One of 2–20 `choices`, each max 100 characters |
+| `acknowledgement` | Checkbox (`true`); a required one must be checked |
+
+There are no conditional questions or file uploads.
+
+**Intake rules:**
+- `opens_at < closes_at` when both are set (also a DB CHECK).
+- `closes_at` can't be after the event starts, and `opens_at` must be before it.
+- Submissions always stop at the event's start.
+- Archived markets can't be changed.
+
+**Transitions** (all others return `409 application_not_submitted`):
+
+| From | To | Who |
+| --- | --- | --- |
+| — | `SUBMITTED` | Vendor business OWNER |
+| `SUBMITTED` | `APPROVED` / `REJECTED` | Organization OWNER or ADMIN |
+| `SUBMITTED` | `WITHDRAWN` | Vendor business OWNER |
+
+Decided and withdrawn applications are final. There's no resubmission,
+reopening, waitlist, or withdrawal after approval yet, and a withdrawn
+application still counts as the business's one application for that date.
+
+**Permissions:**
+
+| Action | Who |
+| --- | --- |
+| Configure intake | Organization OWNER, ADMIN (STAFF read) |
+| List, view organization applications | Organization OWNER, ADMIN, STAFF |
+| Approve, reject | Organization OWNER, ADMIN |
+| Submit, withdraw | Vendor business OWNER |
+| List, view the business's applications | Vendor business OWNER, MEMBER |
+
+Vendor membership grants nothing on the organizer side, and organization
+roles grant nothing on the vendor side (404, like other scoped lookups).
+MEMBER can read but not submit, matching Phase 6's rule that only the owner
+acts for the business.
+
+**Submission checks**, server-side in one transaction:
+- the account is logged in and verified (`email_not_verified`), and is the business's owner;
+- the market is published (otherwise 404), and the date is scheduled and hasn't started;
+- intake is enabled and inside its window: `409 applications_closed`, with `details: [{"state": "not_accepting" | "not_open_yet" | "closed"}]`;
+- neither the account nor the business is restricted by the organization: `403 participation_restricted`, a generic message with no reason;
+- `questions_version` matches, otherwise `409 questions_changed` (the form was edited while the vendor was filling it in);
+- answers are valid, otherwise `400 answers_invalid`, with `details` listing `{question_id, message}`;
+- no application exists yet, otherwise `409 application_exists`, with the existing id and status.
+
+A restriction added later doesn't change existing applications, which stay
+readable. Approval re-checks eligibility: a restricted account or business
+gets `409 applicant_restricted`, and a cancelled, started or no-longer-public
+date gets `409 occurrence_unavailable`. Rejection is still allowed in both cases.
+
+**Concurrency:**
+- Submitting and configuring lock the date (`FOR NO KEY UPDATE`), then its intake row.
+- Decisions and withdrawals lock the application row, so exactly one transition wins.
+- The unique constraint catches any remaining duplicate race.
+- `tests/test_applications_concurrency.py` covers these cases. With the application lock removed, the race test fails.
+
+**Endpoints** (all under `/api/v1`; mutations need the CSRF header):
+
+| Endpoint | Body / query | Returns |
+| --- | --- | --- |
+| `GET /public/occurrences/{id}/application` | — | `state`, window, instructions, `questions_version`, `questions` (questions only while open or opening later) |
+| `GET /public/markets/{id}/application-windows` | — | State per date that hasn't started |
+| `GET` / `PUT /organizations/{org}/markets/{market}/occurrences/{occ}/application-settings` | `{enabled, opens_at?, closes_at?, instructions?, questions?}` (full replace) | Intake settings with `state` |
+| `GET /organizations/{org}/applications` | `?status&market_id&occurrence_id&cursor&limit` | Summaries |
+| `GET /organizations/{org}/applications/{id}` | — | Full application with `history` and actor ids |
+| `POST /organizations/{org}/applications/{id}/approve` or `/reject` | `{"message"?}` | Updated application |
+| `POST /vendors/{business}/applications` | `{occurrence_id, questions_version, answers}` | 201 (rate limit `APPLICATION_RATE_LIMITS`) |
+| `GET /vendors/{business}/applications` | `?status&occurrence_id&cursor&limit` | The vendor's view |
+| `GET /vendors/{business}/applications/{id}` | — | The vendor's view |
+| `POST /vendors/{business}/applications/{id}/withdraw` | — | Updated application |
+
+The vendor's view has no reviewer identities, actor ids or history. Status,
+actors, timestamps and ownership never come from request bodies; unknown
+fields return 422. There are no reviewer-only notes in this phase.
+
+**Demo data (local only):** `uv run python manage.py seed_demo_applications`.
+It runs `seed_demo_markets`, opens applications with sample questions on 4
+dates per demo market, and creates `demo-vendor@example.com` with a business.
+Both demo accounts use the password in `seed_demo_markets`. It needs `DEBUG`;
+**never run it against production.**
 
 ## Checks and tests
 
@@ -752,8 +868,10 @@ in [ARCHITECTURE.md](ARCHITECTURE.md#browser-integration-and-authentication).
 The existing Auth.js login is unchanged and shares nothing with the Django
 accounts.
 
-The public discovery pages (`/markets`, Phase 9) are the first Next.js screens
-backed by Django. Setting `DJANGO_API_ORIGIN` enables the `/api/v1` forwarding
-rule in `next.config.ts`; see the frontend README. Still to do: the
-sign-up/verify/login/reset screens that call these endpoints, and moving each
-workflow off Auth.js/Prisma.
+The public discovery pages (`/markets`, Phase 9) and the application screens
+(Phase 10) are backed by Django. Setting `DJANGO_API_ORIGIN` enables the
+`/api/v1` forwarding rule in `next.config.ts`; see the frontend README. Phase 10
+added the Django sign-in, register and verify-email screens (`/account/*`,
+`/verify-email`). They use the Django session cookie, which is independent of
+the legacy Auth.js login. Still to do: password reset and change screens, and
+moving each legacy workflow off Auth.js/Prisma.

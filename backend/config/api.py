@@ -7,6 +7,9 @@ from django.conf import settings
 from ninja import NinjaAPI
 
 from accounts.api import router as auth_router
+from applications.api import organizer_router as organizer_applications_router
+from applications.api import public_router as public_applications_router
+from applications.api import vendor_router as vendor_applications_router
 from core.api import router as health_router
 from core.errors import install_exception_handlers
 from markets.api import public_router as public_markets_router
@@ -31,7 +34,10 @@ api.add_router("/auth", auth_router)
 api.add_router("/organizations", organizations_router)
 api.add_router("/organizations", moderation_router)
 api.add_router("/organizations", markets_router)
+api.add_router("/organizations", organizer_applications_router)
 api.add_router("/public", public_markets_router)
+api.add_router("/public", public_applications_router)
 api.add_router("/invitations", invitations_router)
 api.add_router("/vendors", vendors_router)
+api.add_router("/vendors", vendor_applications_router)
 api.add_router("/vendor-invitations", vendor_invitations_router)

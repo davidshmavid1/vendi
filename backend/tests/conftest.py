@@ -25,6 +25,9 @@ class ApiClient:
     def patch(self, path, data=None, *, csrf=True, **kwargs):
         return self._send("patch", path, data, csrf=csrf, **kwargs)
 
+    def put(self, path, data=None, *, csrf=True, **kwargs):
+        return self._send("put", path, data, csrf=csrf, **kwargs)
+
     def delete(self, path, *, csrf=True, **kwargs):
         return self._send("delete", path, None, csrf=csrf, **kwargs)
 

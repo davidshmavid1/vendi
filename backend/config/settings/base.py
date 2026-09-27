@@ -22,6 +22,7 @@ INSTALLED_APPS = [
     "vendors",
     "moderation",
     "markets",
+    "applications",
 ]
 
 MIDDLEWARE = [
@@ -102,6 +103,10 @@ VENDOR_INVITATION_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
 VENDOR_RATE_LIMITS = {
     "invitation_create_user": "30/h",
     "invitation_resend_user": "10/h",
+}
+
+APPLICATION_RATE_LIMITS = {
+    "submit_user": "60/h",
 }
 
 # Recurrence generation limits (markets.recurrence).

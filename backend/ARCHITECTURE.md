@@ -40,10 +40,10 @@ same domains, not two backends.
 | --- | --- | --- |
 | Identity (`accounts`) | Users, credentials, email verification, sessions | Implemented |
 | Organizations (`organizations`) | Organizations, memberships and roles, invitations, team audit trail | Implemented |
-| Moderation (`moderation`) | Organization-scoped restrictions of accounts and vendor businesses; the participation policy other domains call | Implemented (no callers yet) |
+| Moderation (`moderation`) | Organization-scoped restrictions of accounts and vendor businesses; the participation policy other domains call | Implemented (called by application submission and approval) |
 | Vendors (`vendors`) | Vendor businesses/profiles and the people authorized to manage them | Implemented |
 | Markets (`markets`) | Listings, locations, event occurrences, weekly recurrence, publication, public discovery (search, filters, nearby, map markers; no PostGIS) | Implemented |
-| Applications | Form versions, submissions, review decisions | Planned |
+| Applications (`applications`) | Per-date intake settings and versioned questions, submissions with question and vendor snapshots, withdrawal, review decisions and their history | Implemented (Phase 10) |
 | Inventory/bookings | Layouts, stalls, stall offers, reservations, bookings | Planned |
 | Payments | Payment attempts, refunds, subscriptions, reconciliation | Planned |
 

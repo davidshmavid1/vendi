@@ -10,7 +10,8 @@ conventions new models follow, how to work with migrations, and the
 > OrganizationInvitation, OrganizationAuditEvent), the `vendors` models
 > (VendorBusiness, VendorMembership, VendorInvitation), the `moderation`
 > model (OrganizationRestriction), the `markets` models (Market,
-> EventOccurrence, RecurrenceSeries), plus Django's session and
+> EventOccurrence, RecurrenceSeries), the `applications` models
+> (ApplicationIntake, Application, ApplicationEvent), plus Django's session and
 > cache tables. Everything else
 > under [Proposed data model](#proposed-data-model) is a design proposal. None
 > of those tables exist yet.
@@ -123,6 +124,7 @@ Current state:
 | `vendors.0001_initial` | VendorBusiness (CHECKs: non-blank name, valid category, normalized contact email), VendorMembership (unique per user; partial unique index `vendors_membership_one_owner`), VendorInvitation (unique token digest; one PENDING per email) | Additive. Reversible on an empty database; rolling back drops the tables **and their data**. |
 | `markets.0001_initial` | Market (CHECKs: name, type, status, coordinates both-or-neither within bounds, country format, published ⇒ venue filled), RecurrenceSeries (unique definition per market; interval 1–12; date and time order), EventOccurrence (CHECK `ends_at > starts_at`; unique (market, starts_at); unique (series, series_slot_start); cancelled_at set iff CANCELLED; index (market, ends_at)) | Additive. Reversible on an empty database; rolling back drops the tables **and their data**. |
 | `markets.0002_published_coords_index` | Partial index `markets_published_coords_idx` on `markets_market (latitude, longitude) WHERE status = 'PUBLISHED'`, for discovery's area and nearby searches (Phase 9) | Additive (index only, no data change). Reversible: rolling back drops the index. |
+| `applications.0001_initial` | ApplicationIntake (one per occurrence; CHECK `closes_at > opens_at`; version ≥ 1), Application (unique (occurrence, vendor_business); CHECKs: valid status, decision fields set exactly when APPROVED/REJECTED, withdrawal fields set exactly when WITHDRAWN; index (occurrence, status)), ApplicationEvent (append-only history). All foreign keys PROTECT. | Additive. Reversible on an empty database; rolling back drops the tables **and their data**. |
 | `moderation.0001_initial` | OrganizationRestriction (CHECKs: exactly one of account/vendor_business, non-blank reason, revocation fields set together, `expires_at > created_at`; indexes on (organization, account) and (organization, vendor_business)) | Additive. Reversible on an empty database; rolling back drops the table **and its history**. |
 
 Foreign keys to users and organizations from these tables are `PROTECT`:
@@ -262,8 +264,8 @@ AuditEvent (→ Organization, actor User)
 | **VendorBusinessMembership** ✅ implemented as `VendorMembership` (OWNER/MEMBER) | Business | People who may act for the business. |
 | **Market** ✅ implemented | Organization; **public** listing fields | A recurring market or one-time popup. IANA timezone, location, public description. |
 | **EventOccurrence** ✅ implemented (+ `RecurrenceSeries`) | Organization; public date/time | One specific date and its local hours. Generated from a schedule or created directly. |
-| **ApplicationFormVersion** | Organization | Immutable set of questions. New edits create a new version. |
-| **Application** | Organization (private) | A vendor business's submission and review state. Stores the form version and a **snapshot** of profile data and answers at submission, so later profile edits don't rewrite history. |
+| **ApplicationFormVersion** ✅ implemented differently: `ApplicationIntake.questions` + `questions_version`, with each Application storing a copy of the questions it answered | Organization | Immutable set of questions. New edits create a new version. |
+| **Application** ✅ implemented (one occurrence per application) | Organization (private) | A vendor business's submission and review state. Stores the form version and a **snapshot** of profile data and answers at submission, so later profile edits don't rewrite history. |
 | **LayoutVersion / Stall** | Organization | The physical map definition: stall labels, sizes, positions. Versioned so past bookings keep their layout. |
 | **StallOffer** | Organization | *Saleable inventory for one occurrence*: which stall, price (minor units + currency), eligibility, capacity. Separates "what exists" (Stall) from "what's for sale on that date". |
 | **Reservation** | Organization | Temporary claim on a StallOffer with `expires_at`. Created before payment. At most one active per offer unit (partial unique constraint). |
