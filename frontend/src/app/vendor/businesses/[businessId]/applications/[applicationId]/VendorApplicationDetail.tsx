@@ -59,6 +59,17 @@ export function VendorApplicationDetail({ businessId, applicationId }: { busines
           ) : (
             <div className="flex flex-col gap-6">
               <p className="text-sm text-zinc-600 dark:text-zinc-400">Organized by {application.organizer_name}</p>
+              {application.status === "APPROVED" && (
+                <Notice tone="green">
+                  You&apos;re accepted for this date.{" "}
+                  <Link
+                    href={`/vendor/businesses/${businessId}/applications/${applicationId}/stall`}
+                    className="font-medium underline"
+                  >
+                    Choose a stall
+                  </Link>
+                </Notice>
+              )}
               <ApplicationDetails application={application} />
               {application.status === "SUBMITTED" && (
                 <div className="flex flex-col gap-2">

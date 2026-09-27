@@ -16,8 +16,11 @@ Rules:
 - A date's offers must cover exactly the stalls of its selected version, in
   one supported currency. Only stalls of that version are accepted.
 - A published date's layout must be unpublished before its version or
-  offers change. Publishing needs a scheduled date that hasn't ended, a
-  market that isn't archived, and at least one enabled offer.
+  offers change.
+- While a stall of the date is held or confirmed (reservations app), the
+  date can't switch version and that stall's offer can't be disabled.
+  Publishing needs a scheduled date that hasn't ended, a market that isn't
+  archived, and at least one enabled offer.
 
 Every write re-checks ``expected_revision`` and validates the whole payload
 before writing, in one transaction. Locks are taken in the order market,
@@ -36,6 +39,7 @@ from layouts.models import LayoutVersion, OccurrenceLayout, Stall, StallOffer
 from markets.models import EventOccurrence, Market, MarketStatus, OccurrenceStatus
 from organizations.models import Role
 from organizations.permissions import membership_for, require_role
+from reservations.models import Reservation
 
 STALL_FIELDS = (
     "label",
@@ -348,6 +352,7 @@ def save_date_layout(
         if not stall_ids:
             raise InvalidRequest("This layout has no stalls yet.", code="layout_version_invalid")
         currency = check_offers(currency, offers, stall_ids)
+        _protect_reserved_offers(occurrence, occurrence_layout, version, offers)
 
         if occurrence_layout is None:
             occurrence_layout = OccurrenceLayout(
@@ -364,6 +369,36 @@ def save_date_layout(
             version.save(update_fields=["locked_at", "updated_at"])
         _write_offers(occurrence, currency, offers)
     return _date_result(occurrence, occurrence_layout)
+
+
+def _protect_reserved_offers(occurrence, occurrence_layout, version, offers: list[dict]) -> None:
+    """While any stall of the date is held or confirmed (reservations app):
+    the date can't switch layout version, and an occupied offer can't be
+    disabled. Prices can still change; each reservation keeps the price and
+    currency it copied when it was taken. Runs under the date lock, which
+    holds also take, so the check can't race a new hold."""
+    occupied = set(
+        Reservation.objects.occupying(timezone.now())
+        .filter(occurrence=occurrence)
+        .values_list("offer__stall_id", flat=True)
+    )
+    if not occupied:
+        return
+    if occurrence_layout is not None and occurrence_layout.layout_version_id != version.pk:
+        raise Conflict(
+            "Vendors are holding or have booked stalls on this date, so its layout "
+            "can't be switched.",
+            code="layout_in_use",
+        )
+    disabled = sorted(
+        o["stall_id"] for o in offers if not o["enabled"] and o["stall_id"] in occupied
+    )
+    if disabled:
+        raise Conflict(
+            "A vendor is holding or has booked this stall, so it can't be withdrawn.",
+            code="offer_reserved",
+            details=[{"stall_id": stall_id} for stall_id in disabled],
+        )
 
 
 def _write_offers(occurrence: EventOccurrence, currency: str, offers: list[dict]) -> None:

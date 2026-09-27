@@ -4,9 +4,11 @@ import { useState } from "react";
 import { Badge, Card } from "@/components/ui";
 import { formatMinor } from "@/lib/layouts/money";
 import { physicalSize, type PublicLayout, type PublicStall } from "@/lib/layouts/types";
+import type { Availability } from "@/lib/reservations/types";
 
 /** Read-only published layout: a visual plan plus an equivalent table. */
-export function PublicLayoutView({ layout }: { layout: PublicLayout }) {
+export function PublicLayoutView({ layout, availability }: { layout: PublicLayout; availability: Availability | null }) {
+  const taken = new Set(availability?.items.filter((i) => i.status === "unavailable").map((i) => i.stall_id));
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected = layout.stalls.find((s) => s.id === selectedId) ?? null;
   const price = (s: PublicStall) => formatMinor(s.price_minor ?? 0, layout.currency, layout.currency_exponent);
@@ -106,7 +108,16 @@ export function PublicLayoutView({ layout }: { layout: PublicLayout }) {
                   {s.label}
                 </th>
                 <td className="py-2 pr-4">{physicalSize(s) ?? "—"}</td>
-                <td className="py-2 pr-4">{s.offered ? price(s) : <span className="text-zinc-500">Not offered</span>}</td>
+                <td className="py-2 pr-4">
+                  {s.offered ? (
+                    <>
+                      {price(s)}
+                      {taken.has(s.id) && <span className="text-zinc-500"> · currently taken</span>}
+                    </>
+                  ) : (
+                    <span className="text-zinc-500">Not offered</span>
+                  )}
+                </td>
                 <td className="py-2">
                   <button
                     type="button"

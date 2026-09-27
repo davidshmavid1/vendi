@@ -12,7 +12,8 @@ conventions new models follow, how to work with migrations, and the
 > model (OrganizationRestriction), the `markets` models (Market,
 > EventOccurrence, RecurrenceSeries), the `applications` models
 > (ApplicationIntake, Application, ApplicationEvent), the `layouts` models
-> (LayoutVersion, Stall, OccurrenceLayout, StallOffer), plus Django's session and
+> (LayoutVersion, Stall, OccurrenceLayout, StallOffer), the `reservations` model
+> (Reservation), plus Django's session and
 > cache tables. Everything else
 > under [Proposed data model](#proposed-data-model) is a design proposal. None
 > of those tables exist yet.
@@ -127,6 +128,9 @@ Current state:
 | `markets.0002_published_coords_index` | Partial index `markets_published_coords_idx` on `markets_market (latitude, longitude) WHERE status = 'PUBLISHED'`, for discovery's area and nearby searches (Phase 9) | Additive (index only, no data change). Reversible: rolling back drops the index. |
 | `applications.0001_initial` | ApplicationIntake (one per occurrence; CHECK `closes_at > opens_at`; version ≥ 1), Application (unique (occurrence, vendor_business); CHECKs: valid status, decision fields set exactly when APPROVED/REJECTED, withdrawal fields set exactly when WITHDRAWN; index (occurrence, status)), ApplicationEvent (append-only history). All foreign keys PROTECT. | Additive. Reversible on an empty database; rolling back drops the tables **and their data**. |
 | `layouts.0001_initial` | LayoutVersion (unique `(market, number)`; CHECKs: canvas 1–10000, number and revision ≥ 1), Stall (unique `(layout_version, lower(label))`; CHECKs: non-blank label, size ≥ 1, physical width/depth/unit all set and positive or all empty), OccurrenceLayout (one per occurrence; revision ≥ 1), StallOffer (unique `(occurrence, stall)`; CHECKs: `0 ≤ price_minor ≤ 1e9`, supported currency). All foreign keys PROTECT. | Additive. Reversible on an empty database; rolling back drops the tables **and their data**. |
+| `layouts.0002_composite_key_targets` | Unique `(id, occurrence)` on StallOffer, the target of Reservation's composite foreign key (Phase 12) | Additive (constraint only; always satisfied because `id` is already unique). Reversible. |
+| `applications.0002_composite_key_targets` | Unique `(id, occurrence, vendor_business)` on Application, the target of Reservation's composite foreign key (Phase 12) | Additive (constraint only). Reversible. |
+| `reservations.0001_initial` | Reservation (partial unique `offer` and `(vendor_business, occurrence)` WHERE `status IN ('HELD','CONFIRMED')`; unique `(held_by, vendor_business, request_key)`; CHECKs: valid status, `0 ≤ price_minor ≤ 1e9`, supported currency, `expires_at > created_at`, non-blank request key, lifecycle timestamps set exactly for their status; index `(status, expires_at)`). Composite FKs `(offer_id, occurrence_id)` → StallOffer and `(application_id, occurrence_id, vendor_business_id)` → Application, so a reservation can't mix dates or businesses. All foreign keys PROTECT. | Additive. Reversible on an empty database; rolling back drops the table **and its data**. |
 | `moderation.0001_initial` | OrganizationRestriction (CHECKs: exactly one of account/vendor_business, non-blank reason, revocation fields set together, `expires_at > created_at`; indexes on (organization, account) and (organization, vendor_business)) | Additive. Reversible on an empty database; rolling back drops the table **and its history**. |
 
 Foreign keys to users and organizations from these tables are `PROTECT`:
@@ -270,7 +274,7 @@ AuditEvent (→ Organization, actor User)
 | **Application** ✅ implemented (one occurrence per application) | Organization (private) | A vendor business's submission and review state. Stores the form version and a **snapshot** of profile data and answers at submission, so later profile edits don't rewrite history. |
 | **LayoutVersion / Stall** ✅ implemented (Phase 11), numbered per market; a version is locked once any date uses it | Organization | The physical map definition: stall labels, sizes, positions. Versioned so past bookings keep their layout. |
 | **StallOffer** ✅ implemented (Phase 11) with price, currency and enabled state; capacity and eligibility still to come. Each date's selected version is recorded in **OccurrenceLayout** | Organization | *Saleable inventory for one occurrence*: which stall, price (minor units + currency), eligibility, capacity. Separates "what exists" (Stall) from "what's for sale on that date". |
-| **Reservation** | Organization | Temporary claim on a StallOffer with `expires_at`. Created before payment. At most one active per offer unit (partial unique constraint). |
+| **Reservation** ✅ implemented (Phase 12): HELD / EXPIRED / RELEASED / CONFIRMED, price snapshot, 15-minute default hold, one occupying reservation per offer and per business per date | Organization | Temporary claim on a StallOffer with `expires_at`. Created before payment. At most one active per offer unit (partial unique constraint). |
 | **Booking** | Organization | Confirmed participation. References the StallOffer and the Application that authorized it. |
 | **PaymentAttempt** | Organization | One provider attempt (Stripe PaymentIntent/Checkout ID, unique), amount, currency, status. Links to what it pays for. Carries idempotency keys. |
 | **OrganizationBan** ✅ implemented as `OrganizationRestriction` (account *or* vendor business) | Organization | Blocks a VendorBusiness (and/or user) from one organization's markets. |
@@ -304,7 +308,6 @@ Boundaries to keep:
 | --- | --- |
 | Account linking and merging with legacy users (email login, uniqueness and normalization are decided: see README → Accounts). Email-address changes. | Existing Data Migration / later accounts work |
 | Whether an Application targets a market season or a single occurrence. Whether one approval covers many dates. | Applications |
-| Capacity model: one vendor per stall vs. quantity-based offers (legacy `Space.totalQty`). Reservation expiry length. | Event Maps / Reservations |
 | Currency support: single currency per organization vs. per offer. | Payments |
 | Refund and cancellation policy rules. | Cancellations & Refunds |
 | Public identifiers (slug vs. UUID) for markets and organizations. | Markets |

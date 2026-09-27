@@ -183,6 +183,11 @@ class StallOffer(models.Model):
             models.UniqueConstraint(
                 fields=["occurrence", "stall"], name="layouts_offer_one_per_occurrence_stall"
             ),
+            # Target of reservations' composite foreign key, which makes the
+            # database reject a reservation whose offer is for another date.
+            models.UniqueConstraint(
+                fields=["id", "occurrence"], name="layouts_offer_id_occurrence_unique"
+            ),
             models.CheckConstraint(
                 condition=Q(price_minor__gte=0, price_minor__lte=MAX_PRICE_MINOR),
                 name="layouts_offer_price_range",

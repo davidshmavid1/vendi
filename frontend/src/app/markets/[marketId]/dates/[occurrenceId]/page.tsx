@@ -6,6 +6,7 @@ import { getPublic } from "@/lib/djangoApi";
 import { formatOccurrence } from "@/lib/discovery/logic";
 import { intakeMessage, type IntakeState } from "@/lib/applications/logic";
 import type { PublicLayout } from "@/lib/layouts/types";
+import type { Availability } from "@/lib/reservations/types";
 import type { PublicOccurrence } from "@/lib/applications/types";
 import { PublicLayoutView } from "./PublicLayoutView";
 
@@ -30,8 +31,9 @@ export default async function DatePage({ params }: { params: Promise<{ marketId:
     );
   }
   const date = occurrence.data;
-  const [layout, intake] = await Promise.all([
+  const [layout, availability, intake] = await Promise.all([
     getPublic<PublicLayout>(`/occurrences/${occurrenceId}/layout`),
+    getPublic<Availability>(`/occurrences/${occurrenceId}/stall-availability`),
     getPublic<{ state: IntakeState; opens_at: string | null }>(`/occurrences/${occurrenceId}/application`),
   ]);
 
@@ -68,7 +70,7 @@ export default async function DatePage({ params }: { params: Promise<{ marketId:
           Stall layout
         </h2>
         {layout.ok ? (
-          <PublicLayoutView layout={layout.data} />
+          <PublicLayoutView layout={layout.data} availability={availability.ok ? availability.data : null} />
         ) : (
           <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
             {layout.status === 404

@@ -24,6 +24,7 @@ INSTALLED_APPS = [
     "markets",
     "applications",
     "layouts",
+    "reservations",
 ]
 
 MIDDLEWARE = [
@@ -108,6 +109,13 @@ VENDOR_RATE_LIMITS = {
 
 APPLICATION_RATE_LIMITS = {
     "submit_user": "60/h",
+}
+
+# Stall holds (reservations app): how long a hold blocks a stall before it
+# lapses, and how often one account may try to take a hold.
+RESERVATION_HOLD_SECONDS = 15 * 60
+RESERVATION_RATE_LIMITS = {
+    "hold_user": "30/h",
 }
 
 # Recurrence generation limits (markets.recurrence).

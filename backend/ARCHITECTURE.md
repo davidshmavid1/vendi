@@ -45,7 +45,8 @@ same domains, not two backends.
 | Markets (`markets`) | Listings, locations, event occurrences, weekly recurrence, publication, public discovery (search, filters, nearby, map markers; no PostGIS) | Implemented |
 | Applications (`applications`) | Per-date intake settings and versioned questions, submissions with question and vendor snapshots, withdrawal, review decisions and their history | Implemented (Phase 10) |
 | Layouts (`layouts`) | Layout versions per market (canvas, rectangular stalls; immutable once used), each date's selected version, per-date stall offers (integer minor-unit prices), publication | Implemented (Phase 11) |
-| Inventory/bookings | Reservations, holds and bookings of layout stalls | Planned |
+| Reservations (`reservations`) | Time-limited holds on a date's stall offers with price snapshots, release, expiry without a job, and the internal `confirm_hold` operation for payments; public availability | Implemented (Phase 12) |
+| Bookings | Confirmed participation created from a confirmed reservation | Planned |
 | Payments | Payment attempts, refunds, subscriptions, reconciliation | Planned |
 
 Domains call each other through operations (e.g. bookings calls

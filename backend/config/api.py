@@ -19,6 +19,8 @@ from markets.api import router as markets_router
 from moderation.api import router as moderation_router
 from organizations.api import invitations_router
 from organizations.api import router as organizations_router
+from reservations.api import public_router as public_reservations_router
+from reservations.api import router as reservations_router
 from vendors.api import invitations_router as vendor_invitations_router
 from vendors.api import router as vendors_router
 
@@ -41,7 +43,9 @@ api.add_router("/organizations", layouts_router)
 api.add_router("/public", public_markets_router)
 api.add_router("/public", public_applications_router)
 api.add_router("/public", public_layouts_router)
+api.add_router("/public", public_reservations_router)
 api.add_router("/invitations", invitations_router)
 api.add_router("/vendors", vendors_router)
 api.add_router("/vendors", vendor_applications_router)
+api.add_router("/vendors", reservations_router)
 api.add_router("/vendor-invitations", vendor_invitations_router)
