@@ -11,8 +11,11 @@ payments — fully isolated from every other organizer.
 
 Three separate money flows:
 
-1. **Vendor → organizer, for a stall.** Destination charge; the platform takes
-   a small cut (`Organization.applicationFeeBps`, default 1%).
+1. **Vendor → organizer, for a stall.** Destination charge. Vendi's fee (1% by
+   default) is **added on top** of the stall price in the Django checkout, so the
+   organizer receives the full price. (The legacy Next.js flow below still takes
+   `Organization.applicationFeeBps` out of the price; it isn't used for Django
+   stall bookings.)
 2. **Organizer → Vendi, monthly subscription.** Stripe Billing/Checkout, not
    Connect — organizers are Vendi's own paying customers. Tracked, not yet
    gating dashboard access.
@@ -307,6 +310,7 @@ Phase 12 lets an approved vendor hold one stall per date before paying.
 Phase 13 turns a held stall into a booking (backend: `backend/README.md` → Payments and bookings).
 
 - **Paying:**
+  - The held stall shows the stall price, Vendi's service fee and the total before checkout (`src/components/payments/FeeBreakdown.tsx`).
   - On the stall page the owner sees **Continue to payment**, which starts or reuses a Stripe Checkout Session on the server and then goes to Stripe.
   - Only `https://checkout.stripe.com` links are followed (`src/lib/payments/logic.ts`).
   - While checkout is open the stall stays held: **Release** is replaced by **Resume payment** and **Payment status**.

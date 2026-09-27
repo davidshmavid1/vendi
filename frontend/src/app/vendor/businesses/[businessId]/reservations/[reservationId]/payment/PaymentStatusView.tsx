@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Card } from "@/components/ui";
+import { FeeBreakdown } from "@/components/payments/FeeBreakdown";
 import { AccountGate, buttonClass, DjangoPage, Notice, secondaryButtonClass } from "@/components/DjangoPage";
 import { apiGet, apiSend, type ApiError, type ApiResult } from "@/lib/django/client";
 import { useAccount } from "@/lib/django/useAccount";
@@ -122,11 +123,29 @@ export function PaymentStatusView({ businessId, reservationId, returned, cancell
           ) : (
             <>
               <Card className="!p-4">
-                <p className="font-medium">
-                  {status.payment_required
-                    ? formatMinor(reservation.price_minor, reservation.currency, reservation.currency_exponent)
-                    : "Free stall"}
-                </p>
+                {!status.payment_required ? (
+                  <p className="font-medium">Free stall</p>
+                ) : status.payment ? (
+                  <FeeBreakdown
+                    stall={status.payment.stall_price_minor}
+                    fee={status.payment.fee_minor}
+                    total={status.payment.amount_minor}
+                    currency={status.payment.currency}
+                    exponent={status.payment.currency_exponent}
+                  />
+                ) : status.quote ? (
+                  <FeeBreakdown
+                    stall={status.quote.stall_price_minor}
+                    fee={status.quote.fee_minor}
+                    total={status.quote.total_minor}
+                    currency={status.quote.currency}
+                    exponent={status.quote.currency_exponent}
+                  />
+                ) : (
+                  <p className="font-medium">
+                    {formatMinor(reservation.price_minor, reservation.currency, reservation.currency_exponent)}
+                  </p>
+                )}
                 <div className="mt-2 text-sm" aria-live="polite">
                   <StateText status={status} returned={returned} cancelled={cancelled} stalled={settling && delay === null} />
                 </div>
@@ -145,7 +164,7 @@ export function PaymentStatusView({ businessId, reservationId, returned, cancell
                     <dt className="text-zinc-500">{booking.payment_required ? "Paid" : "Price"}</dt>
                     <dd>
                       {booking.payment_required
-                        ? `${formatMinor(booking.price_minor, booking.currency, booking.currency_exponent)}${
+                        ? `${formatMinor(status.payment?.amount_minor ?? booking.price_minor, booking.currency, booking.currency_exponent)}${
                             booking.paid_at ? ` on ${formatDateTime(booking.paid_at, booking.occurrence.timezone)}` : ""
                           }`
                         : "Free"}

@@ -102,6 +102,8 @@ def _status_out(request, business_id: int, reservation_id: int) -> dict:
             "status": attempt.status,
             "fulfillment": attempt.fulfillment or None,
             "amount_minor": attempt.amount_minor,
+            "stall_price_minor": attempt.stall_price_minor,
+            "fee_minor": attempt.application_fee_minor,
             "currency": attempt.currency,
             "currency_exponent": exponent(attempt.currency),
             "session_expires_at": attempt.session_expires_at,
@@ -125,11 +127,19 @@ def _status_out(request, business_id: int, reservation_id: int) -> dict:
     return {
         "state": name,
         "payment_required": state.reservation.price_minor > 0,
+        "quote": _quote(state.reservation) if name == "HOLDING" else None,
         "reservation": reservation_out(state.reservation),
         "payment": payment,
         "booking": booking_out(booking) if booking else None,
         "refund": refund,
     }
+
+
+def _quote(reservation) -> dict | None:
+    quote = services.checkout_quote(reservation)
+    if quote is not None:
+        quote["currency_exponent"] = exponent(quote["currency"])
+    return quote
 
 
 _RESERVATION = "/{business_id}/reservations/{reservation_id}"

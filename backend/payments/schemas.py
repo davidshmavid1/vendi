@@ -24,7 +24,10 @@ class PaymentOut(Schema):
     id: int
     status: Literal["CREATING", "OPEN", "SUCCEEDED", "EXPIRED", "CANCELED", "FAILED"]
     fulfillment: Literal["FULFILLED", "UNFULFILLED"] | None
+    # Total charged = stall price + Vendi's fee.
     amount_minor: int
+    stall_price_minor: int
+    fee_minor: int
     currency: str
     currency_exponent: int
     session_expires_at: datetime
@@ -63,9 +66,22 @@ class BookingPage(Schema):
     next_cursor: int | None
 
 
+class CheckoutQuote(Schema):
+    """What checkout will charge for a held stall: the stall price plus
+    Vendi's fee, added on top."""
+
+    stall_price_minor: int
+    fee_minor: int
+    total_minor: int
+    currency: str
+    currency_exponent: int
+
+
 class PaymentStatusOut(Schema):
     state: PaymentStateName
     payment_required: bool
+    # Present while the stall is held and the organizer can take payments.
+    quote: CheckoutQuote | None
     reservation: ReservationOut
     payment: PaymentOut | None
     booking: BookingOut | None
