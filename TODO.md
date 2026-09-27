@@ -1,5 +1,8 @@
 # TODO
 
+The legacy Next.js application now lives in `frontend/`. Run its commands there;
+the legacy source paths and `.env` references below are relative to that directory.
+
 Running checklist for picking this back up across sessions. Check things off
 as they get done — this isn't the long-term roadmap (see README.md's
 Phase 2/3 section for that), it's "what's actually next."

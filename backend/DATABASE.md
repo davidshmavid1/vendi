@@ -19,7 +19,7 @@ conventions new models follow, how to work with migrations, and the
 | Database | Owner | Migrations | Contains |
 | --- | --- | --- | --- |
 | Backend DB (`BACKEND_DATABASE_URL`, e.g. `vendi_backend_dev`) | Django | `backend/*/migrations/` | `accounts_user`, `django_session`, `vendi_cache` (rate limits), Django's `auth_*`/`django_*` tables |
-| Existing app DB (`DATABASE_URL`, Neon in production) | Prisma (Next.js) | `prisma/migrations/` | `Organization`, `User`, `Booking`, … and `_prisma_migrations` |
+| Existing app DB (`DATABASE_URL`, Neon in production) | Prisma (Next.js) | `frontend/prisma/migrations/` | `Organization`, `User`, `Booking`, … and `_prisma_migrations` |
 | Test DB (`test_<backend db name>`) | pytest-django | created and dropped per test run | same as the backend DB |
 
 Neither migration system manages the other's tables. Legacy data moves over
@@ -190,8 +190,8 @@ read "1 stall left" and both write. Patterns for booking and payment work:
 
 ### Weaknesses in the legacy booking flow these rules address
 
-Found in `src/domain/bookingStateMachine.ts` and
-`src/app/api/webhooks/stripe/route.ts`. The legacy app is not changed in this
+Found in `frontend/src/domain/bookingStateMachine.ts` and
+`frontend/src/app/api/webhooks/stripe/route.ts`. The legacy app is not changed in this
 phase; these are the problems the Django design must not repeat.
 
 | Legacy behavior | Consequence | Rule |

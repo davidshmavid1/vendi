@@ -27,8 +27,8 @@ cp .env.example .env          # then edit POSTGRES_PASSWORD and BACKEND_DATABASE
 uv sync                       # creates .venv and installs locked dependencies
 ```
 
-`backend/.env` is git-ignored. It is separate from the Next.js app's root
-`.env`; the backend never reads the root file.
+`backend/.env` is git-ignored. It is separate from the Next.js app's
+`frontend/.env`; the backend never reads the frontend file.
 
 ### Start PostgreSQL (local install)
 
