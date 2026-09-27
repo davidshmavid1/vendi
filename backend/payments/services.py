@@ -78,6 +78,13 @@ logger = logging.getLogger("vendi.payments")
 # keep the stall pending forever.
 ABANDON_CREATING_AFTER = timedelta(minutes=10)
 
+# Tags Vendi's stall sessions in the Stripe Dashboard. A constant, so a
+# retried create sends identical parameters.
+CHECKOUT_INTEGRATION_ID = "vendi-stall-checkout-qhtwmzpk"
+
+# PaymentIntent statuses after which a delayed payment can no longer succeed.
+INTENT_FAILED = ("requires_payment_method", "canceled")
+
 _gateway = None
 
 
@@ -251,9 +258,10 @@ def session_params(attempt: PaymentAttempt) -> dict:
         intent_data["application_fee_amount"] = attempt.application_fee_minor
     return {
         "mode": "payment",
-        # Cards only: payment succeeds or fails during checkout. Delayed
-        # methods would need pending/async states this flow doesn't have.
-        "payment_method_types": ["card"],
+        # No payment_method_types: Stripe shows the methods enabled in the
+        # Dashboard. Delayed ones (bank debits) complete the session unpaid
+        # and settle later; sync_attempt keeps the stall held meanwhile.
+        "integration_identifier": CHECKOUT_INTEGRATION_ID,
         "line_items": [
             {
                 "quantity": 1,
@@ -337,7 +345,8 @@ def sync_attempt(attempt_id: int) -> PaymentAttempt:
         try:
             session = gateway().retrieve_session(attempt.checkout_session_id)
             intent = None
-            if session.status == "complete" and session.payment_status == "paid":
+            if session.status == "complete":
+                # Paid, or unpaid while a delayed method settles or fails.
                 if not session.payment_intent_id:
                     raise ProviderError("session_without_intent", definitive=False)
                 intent = gateway().retrieve_payment_intent(session.payment_intent_id)
@@ -386,6 +395,18 @@ def _apply_session(attempt_id: int, session: SessionSnapshot, intent: IntentSnap
             attempt_id,
             intent,
             verification_problem(PaymentAttempt.objects.get(pk=attempt_id), session, intent),
+        )
+    elif session.status == "complete" and intent and intent.status in INTENT_FAILED:
+        # A delayed payment method failed (checkout.session.async_payment_failed).
+        _close_attempt(attempt_id, AttemptStatus.FAILED, error="async_payment_failed")
+    elif session.status == "complete" and intent:
+        # A delayed payment method is still settling: the session can't be
+        # paid again, and the stall stays held until Stripe decides.
+        PaymentAttempt.objects.filter(pk=attempt_id, status__in=UNRESOLVED_ATTEMPT).update(
+            payment_intent_id=intent.id,
+            last_synced_at=timezone.now(),
+            last_error="",
+            updated_at=timezone.now(),
         )
     elif session.status == "expired":
         _close_attempt(attempt_id, AttemptStatus.EXPIRED)

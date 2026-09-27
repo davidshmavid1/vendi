@@ -101,7 +101,9 @@ def test_checkout_uses_the_reservation_snapshot_and_the_approved_funds_flow(paid
     params = paid.stripe.session_params[session.id]
     assert params["line_items"][0]["price_data"]["unit_amount"] == 2500  # snapshot, not 9999
     assert params["line_items"][0]["price_data"]["currency"] == "usd"
-    assert params["payment_method_types"] == ["card"]
+    # Dynamic payment methods: no allowlist; Dashboard settings decide.
+    assert "payment_method_types" not in params
+    assert params["integration_identifier"] == services.CHECKOUT_INTEGRATION_ID
     assert params["payment_intent_data"]["transfer_data"] == {"destination": "acct_test123"}
     assert params["payment_intent_data"]["application_fee_amount"] == 25  # 1%
     # Return URLs come from configuration, never from the client.
@@ -441,6 +443,50 @@ def test_expired_session_frees_the_stall(paid, api):
         assert (reservation.status, reservation.payment_pending) == ("EXPIRED", False)
         taken = _hold(paid, who="b", key="b1")
         assert taken.status == ReservationStatus.HELD
+
+
+def test_delayed_payment_keeps_the_stall_until_it_succeeds(paid, api):
+    start = timezone.now()
+    with at(start):
+        reservation = _hold(paid)
+        _checkout(paid, reservation)
+    session = paid.stripe.only_session()
+    paid.stripe.pay_later(session.id)
+    _webhook(api, "checkout.session.completed", session.id)
+    attempt = _attempt(reservation)
+    assert attempt.status == AttemptStatus.OPEN and attempt.payment_intent_id
+    state = _state(paid, reservation)
+    assert state["state"] == "PROCESSING" and state["payment"]["checkout_url"] is None
+    assert Booking.objects.count() == 0
+    # Days later: the hold outlived its session, but the stall is still held.
+    with at(start + timedelta(days=3)):
+        call_command("reconcile_payments")
+        reservation.refresh_from_db()
+        assert (reservation.status, reservation.payment_pending) == ("HELD", True)
+        paid.stripe.settle(session.id, succeeded=True)
+        _webhook(api, "checkout.session.async_payment_succeeded", session.id)
+        assert _state(paid, reservation)["state"] == "BOOKED"
+    assert Booking.objects.count() == 1
+
+
+def test_failed_delayed_payment_frees_the_stall(paid, api):
+    start = timezone.now()
+    with at(start):
+        reservation = _hold(paid)
+        _checkout(paid, reservation)
+    session = paid.stripe.only_session()
+    paid.stripe.pay_later(session.id)
+    _webhook(api, "checkout.session.completed", session.id)
+    with at(start + timedelta(days=3)):
+        paid.stripe.settle(session.id, succeeded=False)
+        _webhook(api, "checkout.session.async_payment_failed", session.id)
+        attempt = _attempt(reservation)
+        assert (attempt.status, attempt.last_error) == ("FAILED", "async_payment_failed")
+        reservation.refresh_from_db()
+        assert not reservation.payment_pending
+        assert _state(paid, reservation)["state"] == "EXPIRED"
+        assert _hold(paid, who="b", key="b1").status == ReservationStatus.HELD
+    assert Booking.objects.count() == 0
 
 
 def test_late_payment_after_the_stall_went_to_someone_else_is_refunded(paid, api):

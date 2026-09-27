@@ -78,6 +78,25 @@ class FakeStripe:
         )
         return intent.id
 
+    def pay_later(self, session_id: str) -> str:
+        """The customer completes checkout with a delayed payment method: the
+        session completes unpaid and its PaymentIntent is processing."""
+        intent_id = self.pay(session_id, status="processing", amount_received=0)
+        self.sessions[session_id] = replace(self.sessions[session_id], payment_status="unpaid")
+        return intent_id
+
+    def settle(self, session_id: str, *, succeeded: bool):
+        """A delayed payment succeeds or fails (Stripe-side)."""
+        session = self.sessions[session_id]
+        intent = self.intents[session.payment_intent_id]
+        if succeeded:
+            self.intents[intent.id] = replace(
+                intent, status="succeeded", amount_received=intent.amount
+            )
+            self.sessions[session_id] = replace(session, payment_status="paid")
+        else:
+            self.intents[intent.id] = replace(intent, status="requires_payment_method")
+
     def expire(self, session_id: str):
         """The session times out (Stripe-side)."""
         self.sessions[session_id] = replace(self.sessions[session_id], status="expired")

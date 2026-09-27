@@ -78,7 +78,11 @@ def _state(state: services.PaymentState, now) -> str:
     if attempt and attempt.status == AttemptStatus.CREATING:
         return "PROCESSING"
     if attempt and attempt.status == AttemptStatus.OPEN:
-        return "CHECKOUT_OPEN" if attempt.session_expires_at > now else "PROCESSING"
+        # A PaymentIntent on an open attempt means checkout finished with a
+        # delayed payment method that hasn't settled yet.
+        if attempt.payment_intent_id or attempt.session_expires_at <= now:
+            return "PROCESSING"
+        return "CHECKOUT_OPEN"
     status = state.reservation.status_at(now)
     if status == ReservationStatus.HELD:
         return "HOLDING"

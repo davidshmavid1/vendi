@@ -956,7 +956,8 @@ Constraints worth knowing:
    - It creates a CREATING attempt with a new idempotency key, then marks the reservation `payment_pending` and extends `expires_at` to the session's expiry.
    - An existing live attempt is returned instead, so repeated or concurrent clicks reuse one session.
 2. **Stripe is called with no locks held.** Parameters come only from the stored attempt, so retries are byte-identical:
-   - cards only;
+   - no `payment_method_types`: the methods enabled in the Stripe Dashboard are offered (dynamic payment methods);
+   - `integration_identifier` tags Vendi's sessions in the Dashboard;
    - return URLs from `FRONTEND_BASE_URL`;
    - `expires_at` = attempt creation + `CHECKOUT_SESSION_SECONDS`.
 3. **A second short transaction records the outcome:**
@@ -975,7 +976,10 @@ Constraints worth knowing:
   - At most `CHECKOUT_MAX_ATTEMPTS` (3) attempts per hold.
   - A new attempt needs a hold that is still live.
   - A session is never extended, and nothing re-extends a lapsed hold.
-- Cards are the only payment method: they succeed or fail during checkout. Delayed methods (bank debits, vouchers) would need pending, async-success and async-failure states that this flow deliberately doesn't have.
+- **Delayed payment methods** (bank debits), if enabled in the Dashboard, complete the session unpaid while the PaymentIntent is `processing`. The attempt stays OPEN with its PaymentIntent recorded, the state is `PROCESSING`, no checkout link is offered, and the stall stays held (possibly for days) until Stripe decides:
+  - `checkout.session.async_payment_succeeded` (or reconcile) books it through the usual verification;
+  - `checkout.session.async_payment_failed` (PaymentIntent back to `requires_payment_method` or `canceled`) closes the attempt as FAILED (`async_payment_failed`) and frees the stall.
+  - To keep checkout instant-only, turn delayed methods off in the Dashboard's payment method settings.
 
 **Confirmation:**
 - **Stripe is asked directly.** Webhooks, `reconcile_payments` and the vendor's "Check payment status" all run `sync_attempt`, which retrieves the Checkout Session and its PaymentIntent from Stripe rather than trusting event payloads or metadata.
@@ -1025,6 +1029,8 @@ No worker runs it yet: **an operator (or a cron job) must run it.** Webhooks cov
 
 **Configuration:**
 - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (environment; empty means checkout is unavailable).
+  - Use a **restricted key** (`rk_…`) rather than a secret key, with write access to Checkout Sessions and Refunds, and read access to PaymentIntents and Connect accounts.
+  - For development and CI, use a dedicated Stripe [sandbox](https://docs.stripe.com/sandboxes) rather than the shared test mode.
 - `STRIPE_ALLOW_LIVE` (default false). **Live keys are ignored unless it is set**, so a misconfigured environment can't take real money.
 - `CHECKOUT_SESSION_SECONDS`, `CHECKOUT_MAX_ATTEMPTS`, `PAYMENT_RATE_LIMITS`.
 

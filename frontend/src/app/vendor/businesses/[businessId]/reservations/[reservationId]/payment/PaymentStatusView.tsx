@@ -202,7 +202,10 @@ function StateText({
       return <p className="text-green-700 dark:text-green-400">Your stall is booked.</p>;
     case "PROCESSING":
       return stalled ? (
-        <p>We&apos;re still waiting for the payment provider to confirm. You haven&apos;t been charged twice; check again in a little while.</p>
+        <p>
+          We&apos;re still waiting for the payment provider to confirm. Bank payments can take a few business days; your
+          stall stays held meanwhile and you haven&apos;t been charged twice. Check again later.
+        </p>
       ) : (
         <p>Confirming your payment… Your stall stays held meanwhile.</p>
       );
