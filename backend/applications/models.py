@@ -112,6 +112,13 @@ class Application(models.Model):
                 fields=["occurrence", "vendor_business"],
                 name="applications_one_per_business_occurrence",
             ),
+            # Target of reservations' composite foreign key, which makes the
+            # database reject a reservation whose application is for another
+            # date or business.
+            models.UniqueConstraint(
+                fields=["id", "occurrence", "vendor_business"],
+                name="applications_id_occurrence_business_unique",
+            ),
             models.CheckConstraint(
                 condition=Q(status__in=ApplicationStatus.values),
                 name="applications_status_valid",
