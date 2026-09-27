@@ -4,8 +4,9 @@ How backend code is organized, the API contract, and the boundary with the
 Next.js app. Setup is in [README.md](README.md); database rules are in
 [DATABASE.md](DATABASE.md).
 
-**Implemented today:** health endpoints and accounts (`/api/v1/auth/*`).
-Everything about organizations, vendors, markets and later domains is the
+**Implemented today:** health endpoints, accounts (`/api/v1/auth/*`) and
+organizations with team memberships (`/api/v1/organizations/*`,
+`/api/v1/invitations/*`). Vendors, markets and later domains are the
 **intended** structure.
 
 ## Layers
@@ -36,7 +37,7 @@ same domains, not two backends.
 | Domain (app) | Owns | Status |
 | --- | --- | --- |
 | Identity (`accounts`) | Users, credentials, email verification, sessions | Implemented |
-| Organizations | Organizations, staff memberships and roles, invitations, organization bans | Planned |
+| Organizations (`organizations`) | Organizations, memberships and roles, invitations, team audit trail | Implemented (bans: Phase 7) |
 | Vendors | Vendor businesses/profiles and the people authorized to manage them | Planned |
 | Markets | Listings, locations, event occurrences, publication | Planned |
 | Applications | Form versions, submissions, review decisions | Planned |
@@ -62,6 +63,29 @@ writes go through the owning domain's operation.
   organizer roles and are never accepted from clients.
 - A person may belong to several organizations and vendor businesses at
   once. There is no global ORGANIZER/VENDOR role.
+
+### How organization authorization is enforced (implemented)
+
+`organizations/permissions.py` is the one place these checks live:
+
+1. `membership_for(user, organization_id)` loads the caller's membership from
+   PostgreSQL **on every request**. No membership (or no such organization)
+   → 404 `not_found`, with the same message either way.
+2. `require_role(...)` / `require_manages(...)` → 403 `permission_denied` for
+   a member whose role doesn't allow the action.
+3. Nested resources are looked up **with** the organization id
+   (`filter(pk=membership_id, organization_id=organization_id)`), so an id
+   from another organization is simply not found.
+4. Operations that change memberships or invitations first lock the
+   organization row (`lock_organization`), then re-read the caller's
+   membership inside that transaction. Removals, demotions and ownership
+   transfers therefore run one at a time per organization, and a check can't
+   pass against state that another request is changing.
+
+Later organization-owned domains (markets, applications, …) reuse
+`membership_for` + `require_role` with their own role rules. Being logged in,
+`is_staff`/`is_superuser`, or an organization id in the request never grants
+anything by itself.
 
 ## API conventions
 
@@ -99,11 +123,12 @@ writes go through the owning domain's operation.
   NotFound | Conflict` (or a subclass with its own `default_code`).
   `core/errors.py` maps the class to a status. Anything else becomes a
   generic 500.
-- **Later, when an endpoint needs them:** list endpoints return
-  `{"items": [...], "next_cursor": ...}` (cursor pagination, ordered by a
-  unique key). Retried POSTs that create money-moving records accept an
-  `Idempotency-Key` header backed by a unique constraint. Neither exists
-  yet.
+- **Lists** return `{"items": [...], "next_cursor": <id or null>}`. Pass
+  `?cursor=<next_cursor>&limit=<1-100, default 50>` for the next page
+  (`core/pagination.py`, ordered by id).
+- **Later, when an endpoint needs it:** retried POSTs that create
+  money-moving records accept an `Idempotency-Key` header backed by a unique
+  constraint. Not implemented yet.
 
 ## Transactions and external calls
 

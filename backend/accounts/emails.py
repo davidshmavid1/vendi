@@ -18,21 +18,28 @@ from accounts import tokens
 logger = logging.getLogger(__name__)
 
 
-def _link(path: str, **params: str) -> str:
+def frontend_link(path: str, **params: str) -> str:
+    """Absolute link into the Next.js app, from trusted configuration only."""
     return f"{settings.FRONTEND_BASE_URL.rstrip('/')}{path}?{urlencode(params)}"
 
 
-def _send(user, *, kind: str, subject: str, body: str) -> bool:
+def send_email(to: str, *, kind: str, ref: str, subject: str, body: str) -> bool:
+    """Send one email; return whether the backend accepted it. ``ref`` names
+    the record in logs (e.g. "user 3") instead of the address or body."""
     try:
-        send_mail(subject, body, None, [user.email], fail_silently=False)
+        send_mail(subject, body, None, [to], fail_silently=False)
     except Exception as exc:  # noqa: BLE001 - any backend failure is reported, not raised
-        logger.error("Failed to send %s email to user %s (%s)", kind, user.pk, type(exc).__name__)
+        logger.error("Failed to send %s email for %s (%s)", kind, ref, type(exc).__name__)
         return False
     return True
 
 
+def _send(user, *, kind: str, subject: str, body: str) -> bool:
+    return send_email(user.email, kind=kind, ref=f"user {user.pk}", subject=subject, body=body)
+
+
 def send_verification_email(user) -> bool:
-    link = _link("/verify-email", token=tokens.make_email_verification_token(user))
+    link = frontend_link("/verify-email", token=tokens.make_email_verification_token(user))
     hours = settings.EMAIL_VERIFICATION_MAX_AGE // 3600
     body = (
         "Welcome to Vendi.\n\n"
@@ -45,7 +52,7 @@ def send_verification_email(user) -> bool:
 
 def send_password_reset_email(user) -> bool:
     uid, token = tokens.make_password_reset_token(user)
-    link = _link("/reset-password", uid=uid, token=token)
+    link = frontend_link("/reset-password", uid=uid, token=token)
     minutes = settings.PASSWORD_RESET_TIMEOUT // 60
     body = (
         "Someone asked to reset the password for your Vendi account.\n\n"

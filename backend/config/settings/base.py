@@ -18,6 +18,7 @@ INSTALLED_APPS = [
     "ninja",
     "core",
     "accounts",
+    "organizations",
 ]
 
 MIDDLEWARE = [
@@ -88,6 +89,12 @@ AUTH_RATE_LIMITS = {
     "password_reset_ip": "10/h",
     "password_reset_email": "3/h",
 }
+ORGANIZATION_INVITATION_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
+ORGANIZATION_RATE_LIMITS = {
+    "invitation_create_user": "30/h",
+    "invitation_resend_user": "10/h",
+}
+
 # How many reverse proxies in front of Django append to X-Forwarded-For.
 # 0 = ignore the header and use REMOTE_ADDR (the header is client-controlled).
 NINJA_NUM_PROXIES = 0
