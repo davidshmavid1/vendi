@@ -261,6 +261,27 @@ runserver console during development.
 **Not built yet:** password reset and change screens, and an organizer screen
 for intake settings. Organizers configure intake through the API for now.
 
+## Stall layouts (Django-backed)
+
+Phase 11 adds stall plans (layout versions) per market and prices per date.
+
+- **Plans:** `/organizer` → **Stall layouts** → market → **New layout**, or an existing layout, → `/organizer/[orgId]/markets/[marketId]/layouts/[versionId]`.
+  - Set the canvas size, add rectangular stalls, then drag them or move them with the arrow keys (Shift = 10 units).
+  - Every value can be typed in the stall panel: label, description, position, size, real size and unit. None of it needs a pointer.
+  - Problems (overlaps, off-canvas stalls, duplicate labels) show immediately and block saving; the server validates everything again.
+  - Saves send the revision you loaded. If someone else saved first, **Load the latest version** asks before discarding your edits.
+  - Unsaved changes are flagged, and discarding or leaving asks first.
+  - Once a date uses a layout it's read-only. **Make an editable copy** creates the next version to change.
+- **Prices per date:** market page → a date's **Stalls and prices** → `/organizer/[orgId]/markets/[marketId]/dates/[occurrenceId]/layout`.
+  - Choose the layout version (saving locks a draft, and the page warns first) and the currency, then set each stall's price and whether it's offered.
+  - Switching layouts carries prices over for stalls with the same label; new stalls need a price.
+  - Save, publish and unpublish. A published date is read-only until you unpublish it.
+- **Public view:** `/markets/[marketId]/dates/[occurrenceId]` ("Date details and stalls") shows:
+  - the published plan, a stall detail panel ("View stall details"), and an equivalent table for keyboard and screen-reader users;
+  - stalls not offered on that date as "Not offered", with a note that prices exclude taxes or fees and listed stalls aren't reserved;
+  - no Reserve or Pay actions yet.
+- **Money:** prices are integer minor units from the API, formatted with the date's `currency_exponent` (`src/lib/layouts/money.ts`), for example `$25.00` or `¥2,500`. Typed prices are parsed with string arithmetic, never floats.
+
 ## Hard requirements, and where they're enforced
 
 | Requirement | Where |

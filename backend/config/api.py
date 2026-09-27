@@ -12,6 +12,8 @@ from applications.api import public_router as public_applications_router
 from applications.api import vendor_router as vendor_applications_router
 from core.api import router as health_router
 from core.errors import install_exception_handlers
+from layouts.api import public_router as public_layouts_router
+from layouts.api import router as layouts_router
 from markets.api import public_router as public_markets_router
 from markets.api import router as markets_router
 from moderation.api import router as moderation_router
@@ -35,8 +37,10 @@ api.add_router("/organizations", organizations_router)
 api.add_router("/organizations", moderation_router)
 api.add_router("/organizations", markets_router)
 api.add_router("/organizations", organizer_applications_router)
+api.add_router("/organizations", layouts_router)
 api.add_router("/public", public_markets_router)
 api.add_router("/public", public_applications_router)
+api.add_router("/public", public_layouts_router)
 api.add_router("/invitations", invitations_router)
 api.add_router("/vendors", vendors_router)
 api.add_router("/vendors", vendor_applications_router)

@@ -743,6 +743,103 @@ dates per demo market, and creates `demo-vendor@example.com` with a business.
 Both demo accounts use the password in `seed_demo_markets`. It needs `DEBUG`;
 **never run it against production.**
 
+## Stall layouts and pricing
+
+Organizers draw a market's stall plan once and reuse it across dates, then set
+prices per date (`layouts/`). This **defines sellable spaces only**. There's
+no availability, hold, booking or payment state, and a listed stall isn't a
+promise it can be booked later.
+
+**Models:**
+
+| Model | Holds |
+| --- | --- |
+| `LayoutVersion` | A market's physical plan: `number` (1, 2, 3… per market), logical canvas size, `revision`, `locked_at`, `based_on` (the version it was copied from). |
+| `Stall` | One rectangle of a version: stable `id`, `label`, optional `description`, canvas position and size, optional real-world size. **No price.** |
+| `OccurrenceLayout` | Which version one `EventOccurrence` uses, plus that date's pricing `revision` and `published_at`. One per date. |
+| `StallOffer` | What a date sells: one per `(occurrence, stall)` (DB unique), with `price_minor`, `currency` and `enabled`. |
+
+**Rules:**
+- **A version is editable only until a date uses it.** The first save of a date that selects it sets `locked_at`, which is never cleared. After that, edits return `409 layout_version_locked`.
+  - To change a plan in use, copy it (`POST …/layout-versions` with `{"copy_of": id}` creates the next number with the same canvas and new stalls), edit the copy, and point the dates you choose at it.
+  - Editing therefore never changes another date, or a plan a date already uses.
+- **A date's offers must match its version exactly:** one offer for every stall of the selected version, no stall from another version (`400 offers_invalid`), and one currency per date.
+  - When a date switches versions, offers for the old version's stalls are kept for history but ignored.
+  - A version must belong to the date's market, and must have stalls (`400 layout_version_invalid`).
+- Stalls are never deleted. A version save lists every existing stall by `id`, and an unknown or foreign id returns `400 stall_mismatch`. To stop selling a stall on a date, disable its offer.
+
+**Geometry:**
+- The canvas is 1–10000 logical units per side, independent of screen size.
+- Stalls are integer rectangles from the top-left. They must lie inside the canvas and must not overlap; sharing an edge or corner is fine.
+- Real size is separate and optional: `physical_width`, `physical_depth` and `physical_unit` (`FT` or `M`) are set together, positive, with up to 2 decimals.
+- Labels are unique per version case-insensitively (a DB index on `lower(label)`); max 40 characters, no control or invisible characters.
+- No polygons, images, CAD features or templates beyond copying a version.
+
+**Money:**
+- Integer **minor units** (`price_minor`), never floats. This matches the legacy `Space.price` in cents.
+- An ISO 4217 `currency` from the supported set (`layouts/money.py`): USD, CAD, MXN, EUR, GBP, AUD, NZD (2 decimals), JPY, KRW (0 decimals).
+- Responses include `currency_exponent`, so clients format `2500` as `$25.00` or `¥2,500`.
+- `0 ≤ price_minor ≤ 1,000,000,000`.
+- Prices are listed prices only: no taxes, fees or totals.
+
+**Permissions:** organization OWNER and ADMIN create, copy and edit versions,
+set a date's version and offers, and publish or unpublish. STAFF can read.
+Other accounts get 404. Everything is reached through
+`organizations/{org}/markets/{market}/…`, so nothing can be attached to another
+market or organization.
+
+**Revisions and atomic saves:**
+- Every save sends the `expected_revision` it loaded: the version's for plan edits, the date's for offers (`null` when the date has no layout yet). A mismatch returns `409 stale_revision` with the current revision.
+- The whole payload is validated before anything is written, in one transaction, so an invalid stall or offer means nothing is saved (`400 layout_invalid` or `offers_invalid`, with per-item details).
+- Locks are always taken in the order market, occurrence (`FOR NO KEY UPDATE`), occurrence layout, version. A plan edit racing a date's first save either finishes first or is refused as locked; it never lands afterwards.
+
+**Publication (per date):**
+- `POST …/occurrences/{occ}/layout/publish` with `{"expected_revision": n}` needs:
+  - a scheduled date that hasn't ended (`409 occurrence_unavailable`);
+  - a market that isn't archived;
+  - at least one enabled offer (`400 layout_empty`).
+- A published date's version and offers can't change until `…/unpublish` (`409 layout_published`).
+
+**Public read:** `GET /api/v1/public/occurrences/{id}/layout` returns only a
+published layout of a published market's scheduled date that hasn't ended.
+Otherwise it's a 404, including for cancelled and past dates. It returns the
+canvas, currency and exponent, and each stall with `offered`, `price_minor`
+and `offer_id` (both `null` when not offered). There are no revisions,
+versions, actors or timestamps.
+
+**API examples** (organizer session plus the `X-CSRFToken` header):
+
+```bash
+M="$API/organizations/1/markets/1"
+# A new plan (v1)
+curl -X POST "$M/layout-versions" -d '{"canvas_width": 100, "canvas_height": 60, "stalls": [
+  {"label": "A1", "x": 0, "y": 0, "width": 10, "height": 10,
+   "physical_width": "10", "physical_depth": "10", "physical_unit": "FT"},
+  {"label": "A2", "x": 10, "y": 0, "width": 10, "height": 10}]}'
+# -> 201 {"id": 4, "number": 1, "revision": 1, "locked": false, "stalls": [{"id": 11, ...}, {"id": 12, ...}]}
+
+# Edit the draft: every stall with its id, plus the revision you loaded
+curl -X PUT "$M/layout-versions/4" -d '{"expected_revision": 1, "canvas_width": 100, "canvas_height": 60, "stalls": [{"id": 11, ...}, {"id": 12, ...}, {"label": "A3", ...}]}'
+
+# Price a date (this locks v1), then publish
+curl -X PUT "$M/occurrences/7/layout" -d '{"expected_revision": null, "layout_version_id": 4, "currency": "USD",
+  "offers": [{"stall_id": 11, "price_minor": 2500, "enabled": true}, {"stall_id": 12, "price_minor": 2500, "enabled": false}, ...]}'
+curl -X POST "$M/occurrences/7/layout/publish" -d '{"expected_revision": 1}'
+
+# Change the plan later: copy it, edit the copy, point other dates at it
+curl -X POST "$M/layout-versions" -d '{"copy_of": 4}'   # -> v2, editable
+
+curl "$API/public/occurrences/7/layout"
+# -> {"currency": "USD", "currency_exponent": 2, "stalls": [{"id": 11, "label": "A1", "offered": true, "offer_id": 31, "price_minor": 2500, ...}]}
+```
+
+**Phase 12 boundary (reservations):**
+- Reference **`StallOffer.id`**; the offer identifies both the date and the stall.
+- Read the authoritative price and currency from the offer at reservation time, never from the client.
+- **Snapshot** the agreed `price_minor` and `currency` on the reservation, so later price edits don't change what was agreed.
+- Decide then whether a date with active reservations may be unpublished, switch versions or disable offers. Nothing references offers yet, so no protection exists here.
+- Application approval doesn't assign a stall; selection and allocation rules are for later phases.
+
 ## Checks and tests
 
 ```bash
