@@ -4,6 +4,10 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+The Next.js project root is `frontend/`; its bundled documentation is in
+`frontend/node_modules/next/dist/docs/`. Run Node/Next.js/Prisma commands from
+`frontend/`. The Django project root is `backend/`.
+
 ## Vendi engineering preferences
 
 - Preserve the working application. Make the smallest cohesive change that

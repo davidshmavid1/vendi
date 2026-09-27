@@ -1,5 +1,9 @@
 # Architecture
 
+This document describes the legacy Next.js application in `frontend/`. Paths
+below are relative to that directory. The separate Django backend is documented
+in [backend/README.md](backend/README.md).
+
 This is the internal reference for how Vendi is put together and the rules we
 follow so it doesn't get messy as it grows. `README.md` covers stack/setup;
 this doc covers structure and conventions.
