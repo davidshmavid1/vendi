@@ -10,6 +10,10 @@ The Next.js project root is `frontend/`; its bundled documentation is in
 
 ## Vendi engineering preferences
 
+- Before designing or implementing the landing page, read the saved user brief
+  in `docs/design/landing-page.md`. It is future design direction, not a request
+  to implement it during unrelated work.
+
 - Preserve the working application. Make the smallest cohesive change that
   fully satisfies the requested scope; avoid unrelated cleanup, broad rewrites,
   speculative abstractions, and unnecessary dependencies or file moves.
