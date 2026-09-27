@@ -39,3 +39,17 @@ class EmailThrottle(ClientIPThrottle):
             return None
         digest = hashlib.sha256(normalize_email(email).encode()).hexdigest()
         return self.cache_format % {"scope": self.scope, "ident": digest}
+
+
+class UserThrottle(ClientIPThrottle):
+    """Per authenticated user (Ninja runs authentication before throttles)."""
+
+    def __init__(self, scope: str, rates: dict):
+        self.scope = scope
+        SimpleRateThrottle.__init__(self, rates[scope])
+
+    def get_cache_key(self, request):
+        user = getattr(request, "auth", None)
+        if user is None or not getattr(user, "pk", None):
+            return None
+        return self.cache_format % {"scope": self.scope, "ident": f"user-{user.pk}"}

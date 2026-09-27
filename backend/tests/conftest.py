@@ -20,10 +20,19 @@ class ApiClient:
         return self.http.get("/api/v1/auth/csrf").json()["csrf_token"]
 
     def post(self, path, data=None, *, csrf=True, **kwargs):
+        return self._send("post", path, data, csrf=csrf, **kwargs)
+
+    def patch(self, path, data=None, *, csrf=True, **kwargs):
+        return self._send("patch", path, data, csrf=csrf, **kwargs)
+
+    def delete(self, path, *, csrf=True, **kwargs):
+        return self._send("delete", path, None, csrf=csrf, **kwargs)
+
+    def _send(self, method, path, data, *, csrf, **kwargs):
         headers = kwargs.pop("headers", {})
         if csrf:
             headers["X-CSRFToken"] = self.csrf_token()
-        return self.http.post(
+        return getattr(self.http, method)(
             f"/api/v1{path}", data or {}, content_type="application/json", headers=headers, **kwargs
         )
 
@@ -56,3 +65,15 @@ def link_params(body: str) -> dict:
     """Extract query parameters from the link in an email body."""
     query = re.search(r"https?://\S+\?(\S+)", body).group(1)
     return dict(pair.split("=", 1) for pair in query.split("&"))
+
+
+@pytest.fixture
+def as_user():
+    """An ApiClient with an existing session for ``user`` (skips the login API)."""
+
+    def _as(user):
+        client = ApiClient()
+        client.http.force_login(user)
+        return client
+
+    return _as

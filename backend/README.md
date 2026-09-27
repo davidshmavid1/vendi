@@ -4,9 +4,10 @@ The new backend for Vendi: Django 5.2 LTS + Django Ninja, backed by its own
 PostgreSQL database. It runs **alongside** the existing Next.js app, which is
 unchanged and still uses Prisma, Auth.js and Stripe for everything today.
 
-This is Phase 1 (foundation) only: configuration, database, a versioned API
-with health endpoints, error handling, logging and tests. No business features
-yet.
+Implemented so far: the foundation (configuration, database, versioned API,
+errors, logging, tests), independent email accounts with session login, and
+organizations with team memberships and invitations. Markets, vendors,
+bookings and payments come in later phases.
 
 ## Prerequisites
 
@@ -63,6 +64,7 @@ Optional, for the Django admin at `/admin/`: `uv run python manage.py createsupe
 | `GET /api/v1/health/live` | Process is up. Never touches the database. Always 200 if the server responds. |
 | `GET /api/v1/health/ready` | Database accepts a `SELECT 1`. 200 when ready, 503 when not. No DB details in the response. |
 | `/api/v1/auth/*` | Accounts: see [Accounts](#accounts) below. |
+| `/api/v1/organizations/*`, `/api/v1/invitations/*` | Organizations and teams: see [below](#organizations-and-teams). |
 | `/api/v1/docs` | Interactive API docs (Swagger UI). Development only. |
 | `/api/v1/openapi.json` | OpenAPI schema. Development only. |
 
@@ -158,6 +160,117 @@ post logout ''
 The `Origin` header stands in for the browser. Django's CSRF check compares
 it with the host or `DJANGO_CSRF_TRUSTED_ORIGINS`.
 
+## Organizations and teams
+
+An **organization** operates markets. People get authority in an organization
+only through a **membership** with one role: `OWNER`, `ADMIN` or `STAFF`.
+Accounts stay independent: one person can belong to several organizations
+with a different role in each, and nothing about organizations is stored on
+the user. Each organization has exactly one owner, and the owner membership
+*is* the ownership record. Vendor businesses come in Phase 6, organization
+bans in Phase 7. The existing Next.js organizer screens and legacy
+organizations are **not** migrated.
+
+| Action | OWNER | ADMIN | STAFF |
+| --- | --- | --- | --- |
+| View organization and member directory | ✓ | ✓ | ✓ (no emails) |
+| Rename organization | ✓ | ✓ | — |
+| See pending invitations | ✓ | ✓ | — |
+| Invite, resend, revoke | ADMIN or STAFF | STAFF | — |
+| Remove a member | ADMIN or STAFF | STAFF | — |
+| Change a role (ADMIN ↔ STAFF) | ✓ | — | — |
+| Transfer ownership | ✓ | — | — |
+| Leave | after transferring ownership | ✓ | ✓ |
+
+Checks read the caller's current membership on every request, so a removed
+or demoted member loses access on their very next request without logging
+out. Platform `is_staff`/`is_superuser` grant nothing here. Non-members get
+404 for everything about an organization. Members get 403 for actions their
+role doesn't allow. See
+[ARCHITECTURE.md](ARCHITECTURE.md#how-organization-authorization-is-enforced-implemented).
+
+| Endpoint (under `/api/v1`) | Body | Success |
+| --- | --- | --- |
+| `POST /organizations` | `{"name", "slug"?}` | 201 `{"organization", "membership_id", "role": "OWNER"}` |
+| `GET /organizations` | `?cursor&limit` | 200 `{"items": [{"organization", "membership_id", "role"}], "next_cursor"}` |
+| `GET /organizations/{id}` | — | 200 organization + your role |
+| `PATCH /organizations/{id}` | `{"name"}` | 200 |
+| `GET /organizations/{id}/members` | `?cursor&limit` | 200 `{"items": [{"membership_id", "user_id", "name", "role", "joined_at", "email"}]}` |
+| `PATCH /organizations/{id}/members/{membership_id}` | `{"role": "ADMIN" \| "STAFF"}` | 200 member |
+| `DELETE /organizations/{id}/members/{membership_id}` | — | 204 |
+| `POST /organizations/{id}/leave` | — | 204 |
+| `POST /organizations/{id}/transfer-ownership` | `{"membership_id"}` | 200 new owner |
+| `POST /organizations/{id}/invitations` | `{"email", "role"}` | 201 `{"invitation", "email_sent"}` |
+| `GET /organizations/{id}/invitations` | `?cursor&limit` | 200 pending invitations |
+| `POST /organizations/{id}/invitations/{invitation_id}/resend` | — | 200 `{"invitation", "email_sent"}` |
+| `DELETE /organizations/{id}/invitations/{invitation_id}` | — | 204 |
+| `POST /invitations/accept` | `{"token"}` | 200 `{"organization", "membership_id", "role", "already_member"}` |
+
+All need a session. Every POST, PATCH and DELETE needs `X-CSRFToken`.
+Notable errors: `slug_taken`, `owner_role_locked`, `cannot_remove_self`,
+`owner_must_transfer`, `transfer_target_ineligible`, `already_member`,
+`invitation_pending`, `invitation_not_pending`, `invitation_invalid`,
+`invitation_email_mismatch` and `email_not_verified`.
+
+**Creating:** needs a verified account. The organization, the owner membership
+and an audit record are created in one transaction. The slug comes from the
+name (with a random suffix if taken) unless you pass one. A requested slug
+that's taken is `409 slug_taken`. Slugs can't be changed yet.
+
+**Invitation lifecycle:**
+
+1. An OWNER/ADMIN invites an email with a role. The email is normalized like
+   account emails. Only one pending invitation per email per organization is
+   allowed (`409 invitation_pending`, so resend instead). An expired one is
+   marked `EXPIRED` and replaced. Inviting an existing member is
+   `409 already_member`.
+2. The email links to `FRONTEND_BASE_URL/invitations/accept?token=…`. The
+   token is 256 random bits. Only its SHA-256 is stored, and it never appears
+   in API responses or logs. The link is valid for 7 days. No account or
+   membership is created yet.
+3. **Resend** rotates the token: the old link stops working and the 7 days
+   restart. If sending failed (`email_sent: false`), resending is the
+   recovery.
+4. **Accept** needs a logged-in, verified account whose email equals the
+   invited one. People without an account sign up and verify first, then
+   open the link again. Acceptance rechecks that the inviter is *still* a
+   member allowed to grant that role; if not, the link is invalid. An
+   existing member keeps their current role (`already_member: true`). A used,
+   revoked, expired or tampered link returns `400 invitation_invalid`.
+5. **Revoke** marks a pending invitation `REVOKED`.
+
+**Ownership:** only the owner can transfer, to an existing active member
+with a verified email. In one transaction the old owner becomes ADMIN and the
+target becomes OWNER. The owner can't leave or be removed without
+transferring first. A partial unique index blocks a second owner, and
+organization-row locking plus these rules keep one owner at all times. The
+one-owner index can't by itself guarantee an owner *exists*.
+
+**Audit:** creation, rename, invitation create/resend/revoke/accept, role
+changes, removals, departures and ownership transfers each write an
+`OrganizationAuditEvent` (actor, organization, subject, action, time, role
+details) in the same transaction as the change. No tokens or email
+addresses are stored in it. Viewing them is Phase 18 work; for now use the
+Django admin or psql.
+
+**Rate limits:** each user may create 30 invitations per hour and resend 10
+per hour (`ORGANIZATION_RATE_LIMITS`).
+
+**Try it locally:** with the `post` helper from [Try it with curl](#try-it-with-curl),
+logged in as a verified user:
+
+```bash
+O=http://localhost:8000/api/v1/organizations
+post() { curl -s -c $J -b $J -H "Content-Type: application/json" -H "X-CSRFToken: $(csrf)" \
+              -H "Origin: http://localhost:8000" -X "${3:-POST}" "$1" -d "$2"; echo; }
+post $O '{"name":"Riverside Market"}'                          # -> organization id, e.g. 1
+post $O/1/invitations '{"email":"friend@example.com","role":"STAFF"}'
+# the invitation link is printed in the runserver console; as friend@example.com
+# (registered, verified, logged in with a separate cookie jar):
+post http://localhost:8000/api/v1/invitations/accept '{"token":"<token>"}'
+curl -s -b $J $O/1/members; echo
+```
+
 ## Checks and tests
 
 ```bash
@@ -206,6 +319,10 @@ backend/
     auth.py                session auth + CSRF enforcement for the API
     checks.py              refuses to migrate a Prisma-managed database
     migrations/            creates the database cache table (rate limits)
+  organizations/           organizations, memberships, invitations, team audit
+    permissions.py         role rules + membership lookup/locking
+    services.py            create, team management, invitations, ownership
+    api.py, schemas.py     /api/v1/organizations and /api/v1/invitations
   accounts/                email-login User, account API
     models.py              User, email normalization
     services.py            register, verify, login, password reset/change

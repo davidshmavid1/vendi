@@ -9,6 +9,8 @@ from ninja import NinjaAPI
 from accounts.api import router as auth_router
 from core.api import router as health_router
 from core.errors import install_exception_handlers
+from organizations.api import invitations_router
+from organizations.api import router as organizations_router
 
 api = NinjaAPI(
     title="Vendi API",
@@ -21,3 +23,5 @@ install_exception_handlers(api)
 
 api.add_router("/health", health_router)
 api.add_router("/auth", auth_router)
+api.add_router("/organizations", organizations_router)
+api.add_router("/invitations", invitations_router)

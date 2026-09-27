@@ -5,8 +5,10 @@ conventions new models follow, how to work with migrations, and the
 **proposed** data model for later phases. Setup commands live in
 [README.md](README.md). This file covers the database rules.
 
-> **Status:** the only implemented Django model is `accounts.User` (plus
-> Django's own session and cache tables). Everything
+> **Status:** implemented Django models are `accounts.User` and the
+> `organizations` models (Organization, OrganizationMembership,
+> OrganizationInvitation, OrganizationAuditEvent), plus Django's session and
+> cache tables. Everything else
 > under [Proposed data model](#proposed-data-model) is a design proposal. None
 > of those tables exist yet.
 
@@ -113,6 +115,11 @@ Current state:
 | `accounts.0001_initial` | `accounts_user` (Phase 1) | Reversible |
 | `accounts.0002_email_login` | Checks existing rows and **stops, listing user ids**, if any have an empty email or share a normalized email (nothing is deleted or merged). Then lowercases/trims emails, drops `username`, makes `email` unique, adds `email_verified_at` and the `accounts_user_email_normalized` CHECK (`email = lower(email) AND email <> ''`). | **Irreversible once accounts exist:** re-adding `username` (NOT NULL, UNIQUE) fails on existing rows. Only roll back empty development databases. |
 | `core.0001_cache_table` | Creates `vendi_cache` for Django's database cache | Drops the table |
+| `organizations.0001_initial` | Organization, OrganizationMembership (unique per user; partial unique index `organizations_membership_one_owner` = at most one OWNER), OrganizationInvitation (unique token digest; partial unique index for one PENDING invite per email; role ≠ OWNER; normalized email), OrganizationAuditEvent | Reversible on an empty database. Rolling back drops the tables **and their data**. |
+
+Foreign keys to users and organizations from these tables are `PROTECT`:
+deleting a user who is a member (or an organization with members) fails
+instead of removing the team.
 
 ## Tests
 
@@ -241,8 +248,8 @@ AuditEvent (→ Organization, actor User)
 | Entity | Scope | Purpose and key relationships |
 | --- | --- | --- |
 | **User** | Global | One person. No organization, market or role on the row. |
-| **Organization** | Global identity | Operates markets. Owns all operational records below it. |
-| **OrganizationMembership** | Organization | (user, organization, role such as owner or staff). Unique per pair. Authorization comes from here. |
+| **Organization** ✅ implemented | Global identity | Operates markets. Owns all operational records below it. |
+| **OrganizationMembership** ✅ implemented | Organization | (user, organization, role OWNER/ADMIN/STAFF). Unique per pair. Authorization comes from here. |
 | **VendorBusiness** | Global | Reusable vendor identity and profile (name, category, contact). Not owned by any organization. |
 | **VendorBusinessMembership** | Business | People who may act for the business. |
 | **Market** | Organization; **public** listing fields | A recurring market or one-time popup. IANA timezone, location, public description. |
@@ -256,7 +263,7 @@ AuditEvent (→ Organization, actor User)
 | **PaymentAttempt** | Organization | One provider attempt (Stripe PaymentIntent/Checkout ID, unique), amount, currency, status. Links to what it pays for. Carries idempotency keys. |
 | **OrganizationBan** | Organization | Blocks a VendorBusiness (and/or user) from one organization's markets. |
 | Platform suspension | Global | Different from a ban: disables an account or business everywhere. A platform-admin action, recorded in AuditEvent. |
-| **AuditEvent** | Organization (or platform) | Append-only: actor, action, entity, before/after state, request ID. Written in the same transaction as the change. |
+| **AuditEvent** (team changes implemented as `OrganizationAuditEvent`) | Organization (or platform) | Append-only: actor, action, entity, before/after state, request ID. Written in the same transaction as the change. |
 
 Boundaries to keep:
 
@@ -277,7 +284,6 @@ Boundaries to keep:
 | Decision | Phase |
 | --- | --- |
 | Account linking and merging with legacy users (email login, uniqueness and normalization are decided: see README → Accounts). Email-address changes. | Existing Data Migration / later accounts work |
-| Organization roles and what each may do. | Organizations & Permissions |
 | Whether an Application targets a market season or a single occurrence. Whether one approval covers many dates. | Applications |
 | Capacity model: one vendor per stall vs. quantity-based offers (legacy `Space.totalQty`). Reservation expiry length. | Event Maps / Reservations |
 | Currency support: single currency per organization vs. per offer. | Payments |
