@@ -194,6 +194,9 @@ def _acquire_locked(actor, business, occurrence_id, offer_id, request_key) -> Ho
         request_key=request_key,
         created_at=now,
         expires_at=now + hold_duration(),
+        # The cancellation terms this stall is offered under (Phase 14).
+        policy_captured_at=now,
+        policy_vendor_cutoff_hours=occurrence.market.vendor_cancellation_cutoff_hours,
     )
     return HoldResult(reservation, created=True)
 
@@ -342,6 +345,39 @@ def confirm_locked(reservation: Reservation, now) -> Reservation:
     reservation.payment_pending = False
     reservation.save(update_fields=["status", "confirmed_at", "payment_pending", "updated_at"])
     return reservation
+
+
+def release_for_cancellation(reservation: Reservation, now) -> bool:
+    """The one inventory-release operation for cancellations (Phase 14).
+    Trusted, with ``lock_reservation`` held. A CONFIRMED booking's
+    reservation, or an unpaid HELD one, becomes CANCELLED and stops occupying
+    its stall. A hold with a checkout in progress is never released here:
+    its payment outcome must be settled first. Returns whether it changed;
+    doing it twice is a no-op."""
+    if reservation.status == ReservationStatus.CANCELLED:
+        return False
+    if reservation.payment_pending:
+        raise Conflict(
+            "A payment for this stall is still being settled.", code="payment_in_progress"
+        )
+    if reservation.status not in OCCUPYING:
+        return False  # already free (expired or released)
+    reservation.status = ReservationStatus.CANCELLED
+    reservation.cancelled_at = now
+    reservation.save(update_fields=["status", "cancelled_at", "updated_at"])
+    return True
+
+
+def occupying_for_cancelled_date(occurrence_id: int) -> list[Reservation]:
+    """Trusted, inside the transaction that cancels the date (which holds its
+    row lock): the date's reservations that still hold or book a stall,
+    locked, after expiring lapsed holds."""
+    _expire_lapsed(occurrence_id, timezone.now())
+    return list(
+        Reservation.objects.select_for_update(of=("self",))
+        .filter(occurrence_id=occurrence_id, status__in=OCCUPYING)
+        .order_by("pk")
+    )
 
 
 def confirm_hold(reservation_id: int) -> Reservation:

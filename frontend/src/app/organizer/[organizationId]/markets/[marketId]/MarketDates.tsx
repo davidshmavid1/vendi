@@ -10,9 +10,10 @@ import { useAccount } from "@/lib/django/useAccount";
 import { formatDateTime } from "@/lib/applications/logic";
 import type { MyOrganization } from "@/lib/applications/types";
 import type { VersionOut, VersionSummary } from "@/lib/layouts/types";
+import { CancellationPolicySection } from "./CancellationPolicySection";
 
 type Occurrence = { id: number; starts_at: string; ends_at: string; timezone: string; status: "SCHEDULED" | "CANCELLED" };
-type Market = { id: number; name: string };
+type Market = { id: number; name: string; vendor_cancellation_cutoff_hours: number | null };
 
 export function MarketDates({ organizationId, marketId }: { organizationId: number; marketId: number }) {
   const router = useRouter();
@@ -112,6 +113,15 @@ export function MarketDates({ organizationId, marketId }: { organizationId: numb
                   </ul>
                 )}
               </section>
+
+              {market && (
+                <CancellationPolicySection
+                  organizationId={organizationId}
+                  marketId={marketId}
+                  initialHours={market.vendor_cancellation_cutoff_hours}
+                  canEdit={canEdit}
+                />
+              )}
 
               <section aria-labelledby="dates-heading">
                 <h2 id="dates-heading" className="text-lg font-semibold">

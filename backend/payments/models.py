@@ -215,14 +215,30 @@ class RefundStatus(models.TextChoices):
     SUCCEEDED = "SUCCEEDED", "Succeeded"
     FAILED = "FAILED", "Failed"  # needs an operator
     CANCELED = "CANCELED", "Canceled"  # needs an operator
+    # Not sent, and not retried automatically: the payment is disputed, was
+    # refunded outside Vendi, or can't cover it. An operator reconciles it.
+    REVIEW = "REVIEW", "Needs review"
 
 
 UNRESOLVED_REFUND = (RefundStatus.REQUESTED, RefundStatus.PENDING)
+# Refunds that do (or may) take money back from the payment. Used to make
+# sure refunds never add up to more than was paid.
+COUNTED_REFUND = (
+    RefundStatus.REQUESTED,
+    RefundStatus.PENDING,
+    RefundStatus.SUCCEEDED,
+    RefundStatus.REVIEW,
+)
+NEEDS_OPERATOR = (RefundStatus.FAILED, RefundStatus.CANCELED, RefundStatus.REVIEW)
 
 
 class RefundReason(models.TextChoices):
     # Paid, but the stall couldn't be confirmed (lost inventory or eligibility).
     UNFULFILLED = "UNFULFILLED", "Paid but not fulfilled"
+    # A confirmed booking was cancelled (Phase 14).
+    CANCELLATION = "CANCELLATION", "Booking cancelled"
+    # Made outside Vendi (e.g. in the Stripe Dashboard); recorded from its webhook.
+    EXTERNAL = "EXTERNAL", "Refunded outside Vendi"
 
 
 class Refund(models.Model):
@@ -235,6 +251,9 @@ class Refund(models.Model):
     status = models.CharField(
         max_length=10, choices=RefundStatus.choices, default=RefundStatus.REQUESTED
     )
+    # Sent to Stripe as refund_application_fee. Compensating refunds return
+    # Vendi's fee too; cancellation refunds keep it (approved policy).
+    refund_application_fee = models.BooleanField(default=True)
     provider_calls = models.PositiveIntegerField(default=0)
     last_error = models.CharField(max_length=100, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -248,6 +267,15 @@ class Refund(models.Model):
                 fields=["attempt"],
                 condition=Q(reason="UNFULFILLED"),
                 name="payments_one_compensating_refund",
+            ),
+            # One cancellation refund per payment.
+            models.UniqueConstraint(
+                fields=["attempt"],
+                condition=Q(reason="CANCELLATION"),
+                name="payments_one_cancellation_refund",
+            ),
+            models.CheckConstraint(
+                condition=Q(reason__in=RefundReason.values), name="payments_refund_reason_valid"
             ),
             models.UniqueConstraint(
                 fields=["stripe_refund_id"],

@@ -5,7 +5,7 @@ from ninja import Field, Schema
 
 from core.schemas import InputSchema
 
-ReservationStatusName = Literal["HELD", "EXPIRED", "RELEASED", "CONFIRMED"]
+ReservationStatusName = Literal["HELD", "EXPIRED", "RELEASED", "CONFIRMED", "CANCELLED"]
 
 
 class HoldIn(InputSchema):
@@ -47,6 +47,10 @@ class ReservationOut(Schema):
     # A checkout for this hold is open or its outcome isn't known yet; the
     # hold can't lapse or be released meanwhile.
     payment_pending: bool
+    # Vendors may cancel for a refund until this many hours before the date
+    # starts; null: not online (contact the organizer).
+    policy_vendor_cutoff_hours: int | None
+    policy_captured: bool
     # The server's clock when this response was made, so countdowns don't
     # depend on the visitor's clock.
     server_time: datetime

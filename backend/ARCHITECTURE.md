@@ -46,8 +46,8 @@ same domains, not two backends.
 | Applications (`applications`) | Per-date intake settings and versioned questions, submissions with question and vendor snapshots, withdrawal, review decisions and their history | Implemented (Phase 10) |
 | Layouts (`layouts`) | Layout versions per market (canvas, rectangular stalls; immutable once used), each date's selected version, per-date stall offers (integer minor-unit prices), publication | Implemented (Phase 11) |
 | Reservations (`reservations`) | Time-limited holds on a date's stall offers with price snapshots, release, expiry without a job, and the internal `confirm_hold` operation for payments; public availability | Implemented (Phase 12) |
-| Bookings (`bookings`) | Confirmed stall bookings, created only in the transaction that confirms a reservation; vendor and organizer reads | Implemented (Phase 13) |
-| Payments (`payments`) | Stripe Checkout attempts (Connect destination charges), signed webhooks, verified confirmation, compensating refunds, reconciliation; `payments/gateway.py` is the only Stripe integration point | Implemented (Phase 13; subscriptions and cancellation refunds still planned) |
+| Bookings (`bookings`) | Confirmed stall bookings, created only in the transaction that confirms a reservation; vendor and organizer reads; cancellations (vendor, organizer, whole date) with policy snapshots and date-cancellation work items | Implemented (Phases 13–14) |
+| Payments (`payments`) | Stripe Checkout attempts (Connect destination charges), signed webhooks, verified confirmation, compensating refunds, reconciliation; `payments/gateway.py` is the only Stripe integration point | Implemented (Phases 13–14: cancellation and external refunds; subscriptions still planned) |
 
 Domains call each other through operations (e.g. bookings calls
 `applications.services.approved_application_for(...)`), not by writing

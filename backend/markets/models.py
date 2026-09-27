@@ -26,6 +26,10 @@ class MarketStatus(models.TextChoices):
     ARCHIVED = "ARCHIVED", "Archived"
 
 
+# Longest vendor cancellation cutoff an organizer can set (one year).
+MAX_CANCELLATION_CUTOFF_HOURS = 24 * 365
+
+
 class Market(models.Model):
     organization = models.ForeignKey(Organization, on_delete=models.PROTECT, related_name="markets")
     name = models.CharField(max_length=120)
@@ -49,12 +53,22 @@ class Market(models.Model):
     )
     published_at = models.DateTimeField(null=True, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True)
+    # Vendor cancellation policy (Phase 14): vendors may cancel a booking
+    # themselves, for a refund of what they paid minus Vendi's fee, until this
+    # many hours before the date starts. Null: vendors can't cancel on their
+    # own (they contact the organizer). New holds snapshot it; editing it never
+    # changes existing bookings.
+    vendor_cancellation_cutoff_hours = models.PositiveIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
             models.CheckConstraint(condition=~Q(name=""), name="markets_market_name_not_blank"),
+            models.CheckConstraint(
+                condition=Q(vendor_cancellation_cutoff_hours__lte=MAX_CANCELLATION_CUTOFF_HOURS),
+                name="markets_market_cancellation_cutoff_range",
+            ),
             models.CheckConstraint(
                 condition=Q(market_type__in=MarketType.values), name="markets_market_type_valid"
             ),
