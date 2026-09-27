@@ -13,7 +13,8 @@ conventions new models follow, how to work with migrations, and the
 > EventOccurrence, RecurrenceSeries), the `applications` models
 > (ApplicationIntake, Application, ApplicationEvent), the `layouts` models
 > (LayoutVersion, Stall, OccurrenceLayout, StallOffer), the `reservations` model
-> (Reservation), plus Django's session and
+> (Reservation), the `payments` models (PaymentAccount, PaymentAttempt, Refund,
+> StripeEvent), the `bookings` model (Booking), plus Django's session and
 > cache tables. Everything else
 > under [Proposed data model](#proposed-data-model) is a design proposal. None
 > of those tables exist yet.
@@ -131,6 +132,9 @@ Current state:
 | `layouts.0002_composite_key_targets` | Unique `(id, occurrence)` on StallOffer, the target of Reservation's composite foreign key (Phase 12) | Additive (constraint only; always satisfied because `id` is already unique). Reversible. |
 | `applications.0002_composite_key_targets` | Unique `(id, occurrence, vendor_business)` on Application, the target of Reservation's composite foreign key (Phase 12) | Additive (constraint only). Reversible. |
 | `reservations.0001_initial` | Reservation (partial unique `offer` and `(vendor_business, occurrence)` WHERE `status IN ('HELD','CONFIRMED')`; unique `(held_by, vendor_business, request_key)`; CHECKs: valid status, `0 ≤ price_minor ≤ 1e9`, supported currency, `expires_at > created_at`, non-blank request key, lifecycle timestamps set exactly for their status; index `(status, expires_at)`). Composite FKs `(offer_id, occurrence_id)` → StallOffer and `(application_id, occurrence_id, vendor_business_id)` → Application, so a reservation can't mix dates or businesses. All foreign keys PROTECT. | Additive. Reversible on an empty database; rolling back drops the table **and its data**. |
+| `reservations.0002_payment_pending` | Reservation `payment_pending` (default false; CHECK: only while HELD) and unique `(id, offer, occurrence, application, vendor_business)`, the target of Booking's composite FK (Phase 13) | Additive (new column with a default, constraints only). Reversible. |
+| `payments.0001_initial` | PaymentAccount (one per organization; unique `(livemode, stripe_account_id)`; CHECKs: `acct_` format, fee ≤ 10000 bps), PaymentAttempt (partial unique `reservation` WHERE status IN CREATING/OPEN/SUCCEEDED; unique idempotency key; partial unique `(livemode, checkout_session_id)` and `(livemode, payment_intent_id)` when set; unique `(id, reservation)`; CHECKs: amount 1–1e9, `0 ≤ fee ≤ amount`, supported currency, session expiry after creation, session id once created, fulfillment set exactly when SUCCEEDED), Refund (one compensating refund per attempt; unique Stripe id when set; amount > 0), StripeEvent (unique event id; partial index on unprocessed). All foreign keys PROTECT. | Additive. Reversible on an empty database; rolling back drops the tables **and their data**. |
+| `bookings.0001_initial` | Booking (unique reservation, unique payment attempt; CHECKs: paid ⇔ attempt and price > 0, free ⇔ no attempt and price 0; price range; currency). Composite FKs `(reservation, offer, occurrence, application, vendor_business)` → Reservation and `(payment_attempt, reservation)` → PaymentAttempt. | Additive. Reversible on an empty database; rolling back drops the table **and its data**. |
 | `moderation.0001_initial` | OrganizationRestriction (CHECKs: exactly one of account/vendor_business, non-blank reason, revocation fields set together, `expires_at > created_at`; indexes on (organization, account) and (organization, vendor_business)) | Additive. Reversible on an empty database; rolling back drops the table **and its history**. |
 
 Foreign keys to users and organizations from these tables are `PROTECT`:
@@ -275,8 +279,8 @@ AuditEvent (→ Organization, actor User)
 | **LayoutVersion / Stall** ✅ implemented (Phase 11), numbered per market; a version is locked once any date uses it | Organization | The physical map definition: stall labels, sizes, positions. Versioned so past bookings keep their layout. |
 | **StallOffer** ✅ implemented (Phase 11) with price, currency and enabled state; capacity and eligibility still to come. Each date's selected version is recorded in **OccurrenceLayout** | Organization | *Saleable inventory for one occurrence*: which stall, price (minor units + currency), eligibility, capacity. Separates "what exists" (Stall) from "what's for sale on that date". |
 | **Reservation** ✅ implemented (Phase 12): HELD / EXPIRED / RELEASED / CONFIRMED, price snapshot, 15-minute default hold, one occupying reservation per offer and per business per date | Organization | Temporary claim on a StallOffer with `expires_at`. Created before payment. At most one active per offer unit (partial unique constraint). |
-| **Booking** | Organization | Confirmed participation. References the StallOffer and the Application that authorized it. |
-| **PaymentAttempt** | Organization | One provider attempt (Stripe PaymentIntent/Checkout ID, unique), amount, currency, status. Links to what it pays for. Carries idempotency keys. |
+| **Booking** ✅ implemented (Phase 13): one per confirmed reservation, price snapshot, paid or free | Organization | Confirmed participation. References the StallOffer and the Application that authorized it. |
+| **PaymentAttempt** ✅ implemented (Phase 13) for stall payments via Checkout, with separate payment and fulfillment states; compensating **Refund** and webhook **StripeEvent** records | Organization | One provider attempt (Stripe PaymentIntent/Checkout ID, unique), amount, currency, status. Links to what it pays for. Carries idempotency keys. |
 | **OrganizationBan** ✅ implemented as `OrganizationRestriction` (account *or* vendor business) | Organization | Blocks a VendorBusiness (and/or user) from one organization's markets. |
 | Platform suspension | Global | Different from a ban: disables an account or business everywhere. A platform-admin action, recorded in AuditEvent. |
 | **AuditEvent** (team changes implemented as `OrganizationAuditEvent`) | Organization (or platform) | Append-only: actor, action, entity, before/after state, request ID. Written in the same transaction as the change. |
@@ -308,7 +312,6 @@ Boundaries to keep:
 | --- | --- |
 | Account linking and merging with legacy users (email login, uniqueness and normalization are decided: see README → Accounts). Email-address changes. | Existing Data Migration / later accounts work |
 | Whether an Application targets a market season or a single occurrence. Whether one approval covers many dates. | Applications |
-| Currency support: single currency per organization vs. per offer. | Payments |
 | Refund and cancellation policy rules. | Cancellations & Refunds |
 | Public identifiers (slug vs. UUID) for markets and organizations. | Markets |
 | Whether to use composite foreign keys or derived scoping for each tenant-crossing relationship. | Each domain phase |

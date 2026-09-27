@@ -21,3 +21,8 @@ FRONTEND_BASE_URL = env_str("FRONTEND_BASE_URL", "http://localhost:3000")
 # Emails (including verification/reset links) print to the runserver console.
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 DEFAULT_FROM_EMAIL = "Vendi <no-reply@localhost>"
+
+# Stripe test-mode keys (optional). Without them, checkout reports that
+# payments are unavailable; free stalls still work.
+STRIPE_SECRET_KEY = env_str("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = env_str("STRIPE_WEBHOOK_SECRET", "")

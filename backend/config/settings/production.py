@@ -51,3 +51,8 @@ CSRF_COOKIE_SECURE = True
 # Start short; raise (and consider subdomains/preload) once HTTPS is confirmed
 # stable for the production domain.
 SECURE_HSTS_SECONDS = env_int("SECURE_HSTS_SECONDS", 3600)
+
+# Stripe. STRIPE_ALLOW_LIVE must be set explicitly before live keys are used.
+STRIPE_SECRET_KEY = env_str("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = env_str("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_ALLOW_LIVE = env_bool("STRIPE_ALLOW_LIVE", False)

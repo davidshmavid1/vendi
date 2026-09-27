@@ -25,6 +25,8 @@ INSTALLED_APPS = [
     "applications",
     "layouts",
     "reservations",
+    "payments",
+    "bookings",
 ]
 
 MIDDLEWARE = [
@@ -116,6 +118,25 @@ APPLICATION_RATE_LIMITS = {
 RESERVATION_HOLD_SECONDS = 15 * 60
 RESERVATION_RATE_LIMITS = {
     "hold_user": "30/h",
+}
+
+# Payments (payments app, Stripe Checkout with Connect destination charges).
+# Keys are set per environment; empty means online payments are unavailable.
+STRIPE_SECRET_KEY = ""
+STRIPE_WEBHOOK_SECRET = ""
+# Live keys are ignored unless a deployment explicitly opts in.
+STRIPE_ALLOW_LIVE = False
+# Stripe requires a Checkout Session to last 30 minutes to 24 hours from
+# when it receives the create call. Five minutes of margin keeps a retried
+# create valid (the SDK's own retries alone can take about a minute).
+# Starting checkout extends the stall hold to the session's expiry.
+CHECKOUT_SESSION_SECONDS = 35 * 60
+# Checkout sessions one hold may start (only after earlier ones failed or
+# expired), so retries can't extend a hold indefinitely.
+CHECKOUT_MAX_ATTEMPTS = 3
+PAYMENT_RATE_LIMITS = {
+    "checkout_user": "20/h",
+    "payment_check_user": "60/h",
 }
 
 # Recurrence generation limits (markets.recurrence).

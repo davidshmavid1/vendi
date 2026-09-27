@@ -6,6 +6,7 @@ Permissions:
     take a hold, release a hold              vendor business OWNER
     list / view the business's reservations  vendor business OWNER, MEMBER
     confirm a hold                           trusted server code only (no endpoint)
+    release while a payment is pending       nobody (payments cancels the checkout first)
 
 Locking. Every write locks the event date's row first (FOR NO KEY UPDATE,
 the same lock the applications and layouts services take), then the
@@ -42,7 +43,7 @@ from core.exceptions import Conflict, InvalidRequest, NotFound, PermissionDenied
 from layouts.models import OccurrenceLayout, StallOffer
 from layouts.services import public_date_layout
 from markets.models import EventOccurrence, MarketStatus, OccurrenceStatus
-from moderation.policy import ensure_can_participate
+from moderation.policy import ensure_can_participate, is_restricted
 from reservations.models import OCCUPYING, Reservation, ReservationStatus
 from vendors.permissions import membership_for, require_owner
 
@@ -219,6 +220,11 @@ def release_hold(actor: User, business_id: int, reservation_id: int) -> Reservat
                 "This stall is confirmed; it can't be released here.",
                 code="reservation_confirmed",
             )
+        if reservation.payment_pending:
+            raise Conflict(
+                "A payment for this stall is in progress. Cancel the checkout first.",
+                code="payment_in_progress",
+            )
         if reservation.status == ReservationStatus.HELD:
             reservation.status = ReservationStatus.RELEASED
             reservation.released_at = now
@@ -238,11 +244,13 @@ def list_for_business(actor: User, business_id: int, *, occurrence_id=None, stat
         queryset = queryset.filter(occurrence_id=occurrence_id)
     now = timezone.now()
     if status == ReservationStatus.HELD:
-        queryset = queryset.filter(status=ReservationStatus.HELD, expires_at__gt=now)
+        queryset = queryset.filter(status=ReservationStatus.HELD).exclude(
+            pk__in=Reservation.objects.lapsed(now).values("pk")
+        )
     elif status == ReservationStatus.EXPIRED:
         queryset = queryset.filter(
             Q(status=ReservationStatus.EXPIRED)
-            | Q(status=ReservationStatus.HELD, expires_at__lte=now)
+            | Q(pk__in=Reservation.objects.lapsed(now).values("pk"))
         )
     elif status:
         queryset = queryset.filter(status=status)
@@ -264,30 +272,93 @@ def get_for_business(actor: User, business_id: int, reservation_id: int) -> Rese
 # --- Trusted operations -----------------------------------------------------------------
 
 
-def confirm_hold(reservation_id: int) -> Reservation:
-    """Phase 13 contract: turn a live hold into CONFIRMED, atomically.
-
-    Server code only (e.g. after a verified payment); there is no endpoint.
-    Locks the date, then the reservation. Succeeds only if the reservation
-    is still HELD and ``expires_at`` hasn't passed; then it keeps its stall
-    and price snapshot. Otherwise the lapsed hold is recorded as EXPIRED and
-    Conflict is raised (``hold_expired``, or ``hold_not_active`` for a
-    released or already confirmed reservation). Callers decide what to do
-    with any money taken for a failed confirmation.
-    """
-    reservation = Reservation.objects.filter(pk=reservation_id).first()
-    if reservation is None:
+def lock_reservation(reservation_id: int) -> tuple[EventOccurrence, Reservation]:
+    """Trusted, inside the caller's transaction: lock the reservation's date
+    (expiring its lapsed holds first), then the reservation. The same order
+    every hold operation uses, so payments can't deadlock with holds."""
+    dates = Reservation.objects.filter(pk=reservation_id).values_list("occurrence_id", flat=True)
+    occurrence_id = dates.first()
+    if occurrence_id is None:
         raise NotFound("Reservation not found.")
+    occurrence = _lock_occurrence(occurrence_id)
+    _expire_lapsed(occurrence_id, timezone.now())
+    reservation = (
+        Reservation.objects.select_for_update(of=("self",))
+        .select_related("application", "offer__stall")
+        .get(pk=reservation_id)
+    )
+    return occurrence, reservation
+
+
+def participation_problem(reservation: Reservation, occurrence: EventOccurrence, now) -> str | None:
+    """Why this reservation may no longer be paid for or confirmed, if at all.
+    Call with the date locked. Offers can't be disabled while reserved, and an
+    unpublished layout doesn't end existing holds (see layouts.services)."""
+    if occurrence.market.status != MarketStatus.PUBLISHED:
+        return "market_unavailable"
+    if occurrence.status != OccurrenceStatus.SCHEDULED or occurrence.starts_at <= now:
+        return "occurrence_unavailable"
+    if reservation.application.status != ApplicationStatus.APPROVED:
+        return "application_not_approved"
+    if is_restricted(
+        occurrence.market.organization_id,
+        account=reservation.held_by,
+        vendor_business=reservation.vendor_business,
+        now=now,
+    ):
+        return "participation_restricted"
+    return None
+
+
+def mark_payment_pending(reservation: Reservation, *, until) -> None:
+    """Trusted, with ``lock_reservation`` held: a checkout for this live hold
+    is starting. The hold lasts at least ``until`` (the checkout session's
+    expiry) and can't lapse or be released until ``clear_payment_pending``."""
+    reservation.payment_pending = True
+    reservation.expires_at = max(reservation.expires_at, until)
+    reservation.save(update_fields=["payment_pending", "expires_at", "updated_at"])
+
+
+def clear_payment_pending(reservation: Reservation, now, *, end_hold: bool = False) -> None:
+    """Trusted, with ``lock_reservation`` held: the checkout's outcome is known
+    and it didn't confirm the stall. The hold lapses normally, or ends now
+    (EXPIRED) with ``end_hold`` when it can no longer be fulfilled."""
+    if not reservation.payment_pending:
+        return
+    reservation.payment_pending = False
+    fields = ["payment_pending", "updated_at"]
+    if reservation.status == ReservationStatus.HELD and (end_hold or reservation.expires_at <= now):
+        reservation.status = ReservationStatus.EXPIRED
+        reservation.expired_at = min(reservation.expires_at, now)
+        fields += ["status", "expired_at"]
+    reservation.save(update_fields=fields)
+
+
+def confirm_locked(reservation: Reservation, now) -> Reservation:
+    """Trusted, with ``lock_reservation`` held: HELD -> CONFIRMED. The caller
+    has checked that the hold is still live (or awaiting its payment)."""
+    reservation.status = ReservationStatus.CONFIRMED
+    reservation.confirmed_at = now
+    reservation.payment_pending = False
+    reservation.save(update_fields=["status", "confirmed_at", "payment_pending", "updated_at"])
+    return reservation
+
+
+def confirm_hold(reservation_id: int) -> Reservation:
+    """Turn a live hold into CONFIRMED, atomically (Phase 12 contract).
+
+    Server code only; there is no endpoint. Locks the date, then the
+    reservation. Succeeds only if the reservation is still HELD and either
+    ``expires_at`` hasn't passed or a payment for it is pending; then it keeps
+    its stall and price snapshot. Otherwise the lapsed hold is recorded as
+    EXPIRED and Conflict is raised (``hold_expired``, or ``hold_not_active``
+    for a released or already confirmed reservation). Callers decide what to
+    do with any money taken for a failed confirmation.
+    """
     with transaction.atomic():
-        _lock_occurrence(reservation.occurrence_id)
-        now = timezone.now()
-        _expire_lapsed(reservation.occurrence_id, now)
-        reservation = Reservation.objects.select_for_update().get(pk=reservation_id)
+        _occurrence, reservation = lock_reservation(reservation_id)
         if reservation.status == ReservationStatus.HELD:
-            reservation.status = ReservationStatus.CONFIRMED
-            reservation.confirmed_at = now
-            reservation.save(update_fields=["status", "confirmed_at", "updated_at"])
-            return reservation
+            return confirm_locked(reservation, timezone.now())
     # Outside the transaction so the EXPIRED switch above is kept.
     if reservation.status == ReservationStatus.EXPIRED:
         raise Conflict("This hold has expired.", code="hold_expired")

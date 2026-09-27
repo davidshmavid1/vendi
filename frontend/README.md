@@ -279,12 +279,12 @@ Phase 11 adds stall plans (layout versions) per market and prices per date.
 - **Public view:** `/markets/[marketId]/dates/[occurrenceId]` ("Date details and stalls") shows:
   - the published plan, a stall detail panel ("View stall details"), and an equivalent table for keyboard and screen-reader users;
   - stalls not offered on that date as "Not offered", with a note that prices exclude taxes or fees and listed stalls aren't reserved;
-  - no Pay actions; held stalls show "currently taken" (Phase 12).
+  - no Pay actions on the public page; held or booked stalls show "currently taken".
 - **Money:** prices are integer minor units from the API, formatted with the date's `currency_exponent` (`src/lib/layouts/money.ts`), for example `$25.00` or `¥2,500`. Typed prices are parsed with string arithmetic, never floats.
 
 ## Stall holds (Django-backed)
 
-Phase 12 lets an approved vendor hold one stall per date before paying (payment comes in a later phase).
+Phase 12 lets an approved vendor hold one stall per date before paying.
 
 - **Where:**
   - An approved application (`/vendor/businesses/[businessId]/applications/[applicationId]`) links to **Choose a stall** at `…/stall`.
@@ -299,8 +299,25 @@ Phase 12 lets an approved vendor hold one stall per date before paying (payment 
   - A second hold for the same date says to release the first.
   - A lost response offers **Try again**, which resends the same request key, so it returns the original hold instead of taking a second one.
 - **Release** asks for confirmation.
-- There is **no payment or booking action**; the page says a hold is temporary and not a booking.
+- A hold alone isn't a booking; see Stall payments below.
 - **Public date page:** stalls held or confirmed by anyone show "currently taken", without saying by whom (`/public/occurrences/{id}/stall-availability`).
+
+## Stall payments and bookings (Django-backed)
+
+Phase 13 turns a held stall into a booking (backend: `backend/README.md` → Payments and bookings).
+
+- **Paying:**
+  - On the stall page the owner sees **Continue to payment**, which starts or reuses a Stripe Checkout Session on the server and then goes to Stripe.
+  - Only `https://checkout.stripe.com` links are followed (`src/lib/payments/logic.ts`).
+  - While checkout is open the stall stays held: **Release** is replaced by **Resume payment** and **Payment status**.
+- **Free stalls:** a stall priced 0 shows **Confirm this free stall** instead; no Stripe involved.
+- **Return and status page:** `/vendor/businesses/[businessId]/reservations/[reservationId]/payment` is Stripe's success and cancel URL.
+  - It only shows what the API says: `?checkout=returned|cancelled` changes the wording, never the state.
+  - While the outcome is being decided it polls at 2 s, then 8 s, for about two minutes at most, then offers **Check payment status** (asks Stripe now).
+  - An open checkout can be resumed, or cancelled with **Cancel checkout and release stall**, which asks first; the server expires the session before releasing.
+  - A booked stall shows the booking details. A payment that arrived too late shows that it's being refunded.
+- **Organizer:** market page → a date's **Bookings** → `/organizer/[organizationId]/markets/[marketId]/dates/[occurrenceId]/bookings` lists booked stalls, vendor, price, and paid or free.
+- **Two separate Stripe integrations:** the legacy Next.js payment routes (`/api/webhooks/stripe`, booking and application-fee PaymentIntents) are unchanged. Django's flow has its own webhook endpoint and signing secret.
 
 ## Hard requirements, and where they're enforced
 

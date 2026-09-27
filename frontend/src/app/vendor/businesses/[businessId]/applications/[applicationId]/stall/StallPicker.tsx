@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Card } from "@/components/ui";
 import { AccountGate, buttonClass, DjangoPage, Notice, secondaryButtonClass } from "@/components/DjangoPage";
@@ -13,16 +14,20 @@ import { formatMinor } from "@/lib/layouts/money";
 import { physicalSize, type PublicLayout } from "@/lib/layouts/types";
 import { clockOffsetMs, formatCountdown, newRequestKey, secondsLeft } from "@/lib/reservations/logic";
 import type { Availability, Reservation } from "@/lib/reservations/types";
+import { isCheckoutUrl } from "@/lib/payments/logic";
+import type { PaymentStatus } from "@/lib/payments/types";
 
 type Props = { businessId: number; applicationId: number };
 type Attempt = { offerId: number; key: string };
 
 const REFRESH_MS = 20_000;
 
-/** Choose and hold one stall for an approved application's date. A hold is
- *  temporary; it isn't a booking and nothing is paid here. */
+/** Choose and hold one stall for an approved application's date, then pay
+ *  for it (Stripe Checkout) or confirm it if it's free. A hold alone isn't a
+ *  booking. */
 export function StallPicker({ businessId, applicationId }: Props) {
   const { state: account, reload } = useAccount();
+  const router = useRouter();
   const signedIn = account.status === "signed_in";
   const base = `/vendors/${businessId}/reservations`;
   const [application, setApplication] = useState<VendorApplication | null>(null);
@@ -99,14 +104,20 @@ export function StallPicker({ businessId, applicationId }: Props) {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [hold]);
+  const paymentPending = hold?.status === "HELD" && hold.payment_pending;
   useEffect(() => {
     if (remaining !== 0) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- the hold just ran out
+    if (paymentPending) {
+      // The checkout's outcome decides: the stall stays held until it's known.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the checkout window just ended
+      setMessage({ tone: "amber", text: "Waiting for the payment result. Your stall stays held meanwhile." });
+      return;
+    }
     setMessage({ tone: "amber", text: "Your hold expired, so the stall is free for others again. You can choose a stall again." });
     setHold(null);
     void refreshHold();
     void refreshAvailability();
-  }, [remaining, refreshHold, refreshAvailability]);
+  }, [remaining, paymentPending, refreshHold, refreshAvailability]);
 
   async function takeHold(offerId: number, retry?: Attempt) {
     if (busy) return;
@@ -153,6 +164,47 @@ export function StallPicker({ businessId, applicationId }: Props) {
     setMessage({ tone: "red", text });
     void refreshAvailability();
     if (code === "hold_exists") void refreshHold();
+  }
+
+  const paymentPage = hold ? `/vendor/businesses/${businessId}/reservations/${hold.id}/payment` : null;
+
+  /** Start (or resume) Stripe Checkout; the server reuses an open session. */
+  async function pay() {
+    if (!hold || busy) return;
+    setBusy(true);
+    setMessage(null);
+    const result = await apiSend<PaymentStatus>("POST", `${base}/${hold.id}/checkout`);
+    if (result.ok && isCheckoutUrl(result.data.payment?.checkout_url)) {
+      window.location.assign(result.data.payment.checkout_url);
+      return; // leaving the page; stay busy
+    }
+    setBusy(false);
+    if (result.ok) {
+      if (paymentPage) router.push(paymentPage);
+    } else if (result.status === 0 || result.status === 503) {
+      setMessage({
+        tone: "amber",
+        text: "We couldn't reach the payment provider. Your stall is still held; try again in a moment.",
+      });
+      void refreshHold();
+    } else {
+      setMessage({ tone: "red", text: result.error.message });
+      void refreshHold();
+    }
+  }
+
+  async function confirmFree() {
+    if (!hold || busy) return;
+    setBusy(true);
+    setMessage(null);
+    const result = await apiSend<PaymentStatus>("POST", `${base}/${hold.id}/confirm-free`);
+    setBusy(false);
+    if (result.ok) {
+      if (paymentPage) router.push(paymentPage);
+    } else {
+      setMessage({ tone: "red", text: result.status === 0 ? "We couldn't reach Vendi. Try again." : result.error.message });
+      void refreshHold();
+    }
   }
 
   async function release() {
@@ -227,16 +279,34 @@ export function StallPicker({ businessId, applicationId }: Props) {
                         <Badge tone="green">Confirmed</Badge>
                       )}
                     </div>
-                    {hold.status === "HELD" && isOwner && (
-                      <button type="button" onClick={release} disabled={busy} className={secondaryButtonClass}>
-                        Release this stall
-                      </button>
-                    )}
+                    <div className="flex flex-wrap gap-2">
+                      {hold.status === "HELD" && isOwner && hold.price_minor > 0 && (
+                        <button type="button" onClick={pay} disabled={busy} className={buttonClass}>
+                          {paymentPending ? "Resume payment" : "Continue to payment"}
+                        </button>
+                      )}
+                      {hold.status === "HELD" && isOwner && hold.price_minor === 0 && (
+                        <button type="button" onClick={confirmFree} disabled={busy} className={buttonClass}>
+                          Confirm this free stall
+                        </button>
+                      )}
+                      {hold.status === "HELD" && isOwner && !paymentPending && (
+                        <button type="button" onClick={release} disabled={busy} className={secondaryButtonClass}>
+                          Release this stall
+                        </button>
+                      )}
+                      {(paymentPending || hold.status === "CONFIRMED") && paymentPage && (
+                        <Link href={paymentPage} className={secondaryButtonClass}>
+                          {hold.status === "CONFIRMED" ? "View booking" : "Payment status"}
+                        </Link>
+                      )}
+                    </div>
                   </div>
                   {hold.status === "HELD" && (
                     <p className="mt-3 text-xs text-zinc-500">
-                      This is a temporary hold, not a booking: the stall is set aside for you until the timer ends, then
-                      released automatically. Paying for and confirming stalls isn&apos;t available on Vendi yet.
+                      {paymentPending
+                        ? "Checkout is open: the stall stays held for you until the payment finishes or the checkout expires."
+                        : "This is a temporary hold, not a booking: the stall is set aside for you until the timer ends, then released automatically. It's booked once payment is confirmed."}
                     </p>
                   )}
                 </Card>

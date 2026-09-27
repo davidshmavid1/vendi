@@ -25,6 +25,7 @@ DOMAIN_ERROR_STATUS = {
     exceptions.PermissionDenied: 403,
     exceptions.NotFound: 404,
     exceptions.Conflict: 409,
+    exceptions.ServiceUnavailable: 503,
 }
 
 

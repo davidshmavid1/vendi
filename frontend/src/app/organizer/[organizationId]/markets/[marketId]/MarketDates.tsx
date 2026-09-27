@@ -129,9 +129,14 @@ export function MarketDates({ organizationId, marketId }: { organizationId: numb
                         <span>
                           {formatDateTime(o.starts_at, o.timezone)} {o.status === "CANCELLED" && <Badge tone="red">Cancelled</Badge>}
                         </span>
-                        <Link href={`/organizer/${organizationId}/markets/${marketId}/dates/${o.id}/layout`} className="underline">
-                          Stalls and prices
-                        </Link>
+                        <span className="flex gap-4">
+                          <Link href={`/organizer/${organizationId}/markets/${marketId}/dates/${o.id}/layout`} className="underline">
+                            Stalls and prices
+                          </Link>
+                          <Link href={`/organizer/${organizationId}/markets/${marketId}/dates/${o.id}/bookings`} className="underline">
+                            Bookings
+                          </Link>
+                        </span>
                       </li>
                     ))}
                   </ul>
