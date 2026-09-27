@@ -844,8 +844,8 @@ curl "$API/public/occurrences/7/layout"
 
 A vendor whose application for a date is approved can **hold** one of that
 date's stalls for a short time (`reservations/`). A hold sets the stall aside
-at the price shown. It is **not a booking** and no money moves. Phase 13's
-payment flow turns a hold into a confirmed reservation.
+at the price shown. It is **not a booking** and no money moves until the
+vendor pays (see Payments and bookings).
 
 **Lifecycle** (`Reservation.status`):
 
@@ -912,11 +912,130 @@ It returns 201. Holds are rate-limited (`RESERVATION_RATE_LIMITS["hold_user"]`, 
 - Price edits are allowed and never affect existing reservations.
 - Unpublishing the layout, archiving the market, cancelling the date, or a new restriction stops new holds but leaves existing ones in place.
 
-**Phase 13 contract: `reservations.services.confirm_hold(reservation_id)`.**
-- It's an internal operation with no endpoint, and clients can never set CONFIRMED.
-- It locks the date, expires lapsed holds, locks the reservation and, if it is still HELD with time left, sets CONFIRMED and `confirmed_at`, then returns the reservation.
-- A lapsed hold raises `409 hold_expired`; the EXPIRED switch is still committed, so the stall is free for others. Any other state raises `409 hold_not_active`.
-- A caller that has already taken payment must handle those errors (e.g. refund). Confirming a CONFIRMED reservation raises `hold_not_active`, so callers must check the state first if they need idempotency.
+**Phase 13 contract: confirmation.**
+- Clients can never set CONFIRMED directly. The payments domain confirms a hold only after a verified payment, or for a free stall.
+- It uses `lock_reservation`, `participation_problem`, `mark_payment_pending`, `clear_payment_pending` and `confirm_locked` (see Payments and bookings). `confirm_hold(reservation_id)` is the stand-alone version of the same confirmation.
+- `payment_pending` marks a hold whose checkout is open or has an unknown outcome. While it is set, the hold doesn't lapse, `expire_holds` skips it, and release returns `409 payment_in_progress`.
+
+## Payments and bookings
+
+A held stall becomes a **booking** after a **verified** payment through Stripe
+Checkout (`payments/`, `bookings/`), or immediately if its price is 0. A
+browser returning from Stripe is never proof of payment.
+
+**Funds flow:**
+- This reuses the model already approved and test-verified for the legacy app (`frontend/README.md`): Stripe Connect **destination charges**. The Checkout Session and its PaymentIntent live on Vendi's platform account.
+- `payment_intent_data.transfer_data.destination` is the organizer's connected account, and `application_fee_amount` is the platform's cut: `price × application_fee_bps / 10000`, rounded down, default 100 bps = 1%, per organization, as the legacy `Organization.applicationFeeBps`.
+- Compensating refunds use `reverse_transfer` and `refund_application_fee`, so the organizer and the platform both give back their share.
+- **Linking accounts:** a Django organization is linked to its connected account by an operator. There is no self-serve Connect onboarding in the Django app yet:
+
+  ```bash
+  uv run python manage.py link_stripe_account <organization_id> acct_123 [--fee-bps 100]
+  ```
+
+  The command asks Stripe for the account and records whether it can take charges. Until an organization is linked, checkout returns `409 payments_unavailable`; free stalls still work.
+
+**Records** (no card data, secrets or webhook payloads are stored):
+
+| Model | Holds |
+| --- | --- |
+| `PaymentAccount` | Organization → Stripe connected account, `livemode`, `charges_enabled`, `application_fee_bps`. |
+| `PaymentAttempt` | One Checkout Session for one reservation. Snapshot of amount, currency, fee and destination; its own `idempotency_key`; `checkout_session_id` and `payment_intent_id`, each unique per `livemode`. **`status`** is the payment: CREATING → OPEN → SUCCEEDED, or EXPIRED, CANCELED, FAILED. A separate **`fulfillment`** (FULFILLED/UNFULFILLED) says whether a paid attempt got its stall. `provider_calls`, `last_error` and `last_synced_at` support recovery. |
+| `Refund` | Compensating refund of an UNFULFILLED payment: REQUESTED → PENDING → SUCCEEDED, or FAILED/CANCELED (operator). |
+| `StripeEvent` | One row per webhook event id (unique), with `processed_at`, `attempts` and `last_error`. |
+| `Booking` | One per reservation (unique). It references the reservation, offer, date, application and business (composite FK, so they must match the reservation), with the price snapshot, `payment_required`, and the payment attempt, whose own composite FK means it must be for the same reservation. |
+
+Constraints worth knowing:
+- At most one CREATING, OPEN or SUCCEEDED attempt per reservation.
+- A free booking has no attempt; a paid booking has exactly one.
+- At most one compensating refund per payment.
+
+**Checkout** (`POST /vendors/{business}/reservations/{id}/checkout`, OWNER, rate-limited):
+1. **One short transaction** (lock order: date → reservation → attempt):
+   - The reservation must be a live HELD hold with a price above 0, whose date, market, application and restrictions still allow taking part.
+   - It creates a CREATING attempt with a new idempotency key, then marks the reservation `payment_pending` and extends `expires_at` to the session's expiry.
+   - An existing live attempt is returned instead, so repeated or concurrent clicks reuse one session.
+2. **Stripe is called with no locks held.** Parameters come only from the stored attempt, so retries are byte-identical:
+   - cards only;
+   - return URLs from `FRONTEND_BASE_URL`;
+   - `expires_at` = attempt creation + `CHECKOUT_SESSION_SECONDS`.
+3. **A second short transaction records the outcome:**
+   - **Success:** OPEN, with the session id and URL.
+   - **Definitive refusal:** FAILED; the hold is released from payment and another attempt is allowed.
+   - **Unknown** (timeout, 5xx, rate limit, in-flight idempotent request): the attempt stays CREATING and the API returns `503 checkout_pending`. Repeating the request resends the same key, which returns Stripe's original session. The same happens if Stripe succeeded but saving locally failed.
+
+**Hold and checkout expiry:**
+- Stripe requires a Checkout Session to last **30 minutes to 24 hours**, so a 15-minute session isn't possible.
+- Policy:
+  - A hold lasts `RESERVATION_HOLD_SECONDS` (15 minutes) before checkout.
+  - Starting checkout extends it to the session's expiry, `CHECKOUT_SESSION_SECONDS` = 31 minutes (one minute of margin so a retried create stays valid).
+  - While `payment_pending` is set, the stall can't be lost, even after `expires_at`, until Stripe's answer is known: paid, expired, cancelled, or creation refused.
+- Bounds:
+  - Only one live attempt at a time.
+  - At most `CHECKOUT_MAX_ATTEMPTS` (3) attempts per hold.
+  - A new attempt needs a hold that is still live.
+  - A session is never extended, and nothing re-extends a lapsed hold.
+- Cards are the only payment method: they succeed or fail during checkout. Delayed methods (bank debits, vouchers) would need pending, async-success and async-failure states that this flow deliberately doesn't have.
+
+**Confirmation:**
+- **Stripe is asked directly.** Webhooks, `reconcile_payments` and the vendor's "Check payment status" all run `sync_attempt`, which retrieves the Checkout Session and its PaymentIntent from Stripe rather than trusting event payloads or metadata.
+- **Verification.** A payment counts only if all of these hold:
+  - the session is `complete` and `paid`;
+  - the PaymentIntent `succeeded`;
+  - session id, `client_reference_id`, livemode, amount (total and received), currency, destination and application fee all match the attempt.
+- **Booking.** Then, in **one transaction** (date → reservation → attempt locks):
+  - the reservation must still be HELD with `payment_pending`, and its date, market, application and restrictions must still allow it;
+  - if so, it becomes CONFIRMED and a Booking is created, marked SUCCEEDED + FULFILLED.
+  - A duplicate or concurrent confirmation sees SUCCEEDED and does nothing.
+- **Paid but unfulfilled.** If the payment is valid but can't be fulfilled (inventory lost, a late payment for a closed attempt, a restriction or cancellation meanwhile, or a verification mismatch), the attempt becomes SUCCEEDED + **UNFULFILLED**. The hold ends, and a full `Refund` is requested in the same transaction.
+  - The refund is sent to Stripe after commit with its own idempotency key.
+  - The vendor sees "refunding" and never "booked".
+  - This is compensation only; cancellations and refund policies are Phase 14.
+- **Terminal states.** SUCCEEDED is never overwritten: an older `expired` event after a payment changes nothing. Final refund states never change.
+
+**Cancel checkout** (`POST …/checkout/cancel`, OWNER):
+- Vendi first asks Stripe to expire the session.
+- Only once Stripe confirms it can't be paid is the attempt CANCELED and the hold released.
+- If it was paid meanwhile, the booking stands. If Stripe can't be reached, nothing is released (`503`).
+
+**Free stalls** (`POST …/confirm-free`, OWNER):
+- The same authorization, eligibility and locking apply, with no Stripe call.
+- It creates one Booking with `payment_required = false` and no attempt, and is idempotent.
+
+**Webhook:** `POST /api/v1/payments/stripe/webhook`.
+- **Verification:** the `Stripe-Signature` header is checked against the **raw body** with `STRIPE_WEBHOOK_SECRET`, the platform endpoint's signing secret (5-minute tolerance). A bad signature returns `400 invalid_signature` and nothing is stored.
+- **CSRF:** the endpoint has no session and needs no CSRF token, because the signature authenticates it. No other endpoint's CSRF changed.
+- **Recording:** each event is stored once (unique event id) and marked processed only after its effects commit. If Stripe can't be reached while processing, the endpoint returns `503`, so Stripe redelivers and the event stays retryable.
+- **Ignored events** (acknowledged, recorded as ignored): events from connected accounts, events from the other mode, and sessions that aren't Vendi's.
+- **Stripe setup** (test mode): add an endpoint for `https://<backend>/api/v1/payments/stripe/webhook` with events `checkout.session.completed`, `checkout.session.expired`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `refund.created`, `refund.updated` and `refund.failed`.
+  - Locally: `stripe listen --forward-to localhost:8000/api/v1/payments/stripe/webhook` and use the secret it prints.
+  - This endpoint is separate from the legacy Next.js one (`/api/webhooks/stripe`), and each has its own signing secret.
+
+**Recovery:** `uv run python manage.py reconcile_payments [--limit 100]` is idempotent, bounded per category, and logs ids and error codes only. It:
+- reprocesses unprocessed webhook events (lost or failed processing);
+- retries CREATING attempts older than 30 seconds (interrupted checkout creation);
+- re-checks OPEN attempts that are past their session expiry, or not synced for 5 minutes (lost webhooks, payments pending local confirmation, abandoned sessions);
+- sends or re-checks unresolved refunds;
+- expires lapsed holds;
+- reports refunds Stripe refused (FAILED/CANCELED), which need an operator.
+
+No worker runs it yet: **an operator (or a cron job) must run it.** Webhooks cover the normal path. Until a schedule exists, lost webhooks, interrupted creations and refund retries wait for the next run. Every 5 minutes is a sensible schedule; overlapping runs are safe.
+
+**Configuration:**
+- `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (environment; empty means checkout is unavailable).
+- `STRIPE_ALLOW_LIVE` (default false). **Live keys are ignored unless it is set**, so a misconfigured environment can't take real money.
+- `CHECKOUT_SESSION_SECONDS`, `CHECKOUT_MAX_ATTEMPTS`, `PAYMENT_RATE_LIMITS`.
+
+**Reads:**
+- `GET …/reservations/{id}/payment` returns the authoritative state for the return page: `HOLDING`, `CHECKOUT_OPEN`, `PROCESSING`, `BOOKED`, `REFUND_PENDING`, `REFUNDED`, `REFUND_FAILED`, `EXPIRED` or `RELEASED`, plus the booking.
+  - `checkout_url` is included only for the owner and only while the session can be paid.
+- `POST …/payment/check` asks Stripe now (rate-limited).
+- `GET /vendors/{business}/bookings[/{id}]` (members).
+- `GET /organizations/{org}/bookings?market_id=&occurrence_id=` (any organization member).
+
+**Tests:**
+- `tests/test_payments.py` and `tests/test_payments_concurrency.py` replace the gateway (`payments/gateway.py`, the only module that imports `stripe`) with `tests/fake_stripe.py`. It keeps Stripe's idempotency semantics, can simulate timeouts, lost responses and refusals, and checks webhook signatures with the real verification code.
+- No test calls Stripe. End-to-end test-mode verification needs `STRIPE_SECRET_KEY` (test), `STRIPE_WEBHOOK_SECRET` and a linked test connected account.
 
 ## Checks and tests
 
