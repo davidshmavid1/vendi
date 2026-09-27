@@ -19,6 +19,8 @@ INSTALLED_APPS = [
     "core",
     "accounts",
     "organizations",
+    "vendors",
+    "moderation",
 ]
 
 MIDDLEWARE = [
@@ -91,6 +93,12 @@ AUTH_RATE_LIMITS = {
 }
 ORGANIZATION_INVITATION_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
 ORGANIZATION_RATE_LIMITS = {
+    "invitation_create_user": "30/h",
+    "invitation_resend_user": "10/h",
+}
+
+VENDOR_INVITATION_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
+VENDOR_RATE_LIMITS = {
     "invitation_create_user": "30/h",
     "invitation_resend_user": "10/h",
 }

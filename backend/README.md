@@ -6,14 +6,16 @@ unchanged and still uses Prisma, Auth.js and Stripe for everything today.
 
 Implemented so far: the foundation (configuration, database, versioned API,
 errors, logging, tests), independent email accounts with session login, and
-organizations with team memberships and invitations. Markets, vendors,
-bookings and payments come in later phases.
+organizations with team memberships and invitations, shared vendor
+business profiles, and organization-scoped participation restrictions. Markets, applications, bookings and payments come in later
+phases.
 
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) — installs Python 3.13 and dependencies for you.
 - **Python 3.13** (pinned in `.python-version`; uv downloads it if missing).
-- PostgreSQL 16, either via **Docker** (recommended) or an existing local install.
+- PostgreSQL 16 running locally (Homebrew, Postgres.app or any install). Docker
+  is optional, not required.
 
 ## Setup
 
@@ -28,24 +30,34 @@ uv sync                       # creates .venv and installs locked dependencies
 `backend/.env` is git-ignored. It is separate from the Next.js app's root
 `.env`; the backend never reads the root file.
 
-### Start PostgreSQL (Docker)
+### Start PostgreSQL (local install)
+
+With Homebrew (Postgres.app works the same way):
 
 ```bash
-docker compose up -d          # starts postgres:16 on localhost:5433
-docker compose ps             # wait for "healthy"
-```
-
-Data lives in the named volume `backend-postgres-data` and survives restarts.
-
-### Or: use an existing local PostgreSQL
-
-```bash
-createuser --createdb --pwprompt vendi   # CREATEDB lets the test suite create its test database
+brew install postgresql@16
+brew services start postgresql@16
+pg_isready
+createuser --createdb --pwprompt vendi
 createdb -O vendi vendi_backend_dev
 ```
 
-Then set `BACKEND_DATABASE_URL=postgres://vendi:<password>@localhost:5432/vendi_backend_dev`
+`CREATEDB` lets the test suite create its temporary test database. Set
+`BACKEND_DATABASE_URL=postgres://vendi:<password>@localhost:5432/vendi_backend_dev`
 in `backend/.env`.
+
+If `brew services` reports a status of `other` and `pg_isready` says
+`no response`, start it directly instead (and again after a reboot):
+`pg_ctl -D /opt/homebrew/var/postgresql@16 -l /opt/homebrew/var/log/postgresql@16.log start`.
+
+### Or: Docker (optional)
+
+```bash
+docker compose up -d          # postgres:16 on localhost:5433, data in a named volume
+```
+
+Set the `POSTGRES_*` values in `backend/.env` and point `BACKEND_DATABASE_URL`
+at port 5433.
 
 ### Apply migrations and run
 
@@ -65,6 +77,8 @@ Optional, for the Django admin at `/admin/`: `uv run python manage.py createsupe
 | `GET /api/v1/health/ready` | Database accepts a `SELECT 1`. 200 when ready, 503 when not. No DB details in the response. |
 | `/api/v1/auth/*` | Accounts: see [Accounts](#accounts) below. |
 | `/api/v1/organizations/*`, `/api/v1/invitations/*` | Organizations and teams: see [below](#organizations-and-teams). |
+| `/api/v1/vendors/*`, `/api/v1/vendor-invitations/*` | Vendor businesses: see [below](#vendor-businesses). |
+| `/api/v1/organizations/{id}/restrictions` | Organization restrictions: see [below](#organization-restrictions-moderation). |
 | `/api/v1/docs` | Interactive API docs (Swagger UI). Development only. |
 | `/api/v1/openapi.json` | OpenAPI schema. Development only. |
 
@@ -167,8 +181,8 @@ only through a **membership** with one role: `OWNER`, `ADMIN` or `STAFF`.
 Accounts stay independent: one person can belong to several organizations
 with a different role in each, and nothing about organizations is stored on
 the user. Each organization has exactly one owner, and the owner membership
-*is* the ownership record. Vendor businesses come in Phase 6, organization
-bans in Phase 7. The existing Next.js organizer screens and legacy
+*is* the ownership record. Vendor businesses and organization restrictions
+have their own sections below. The existing Next.js organizer screens and legacy
 organizations are **not** migrated.
 
 | Action | OWNER | ADMIN | STAFF |
@@ -271,6 +285,198 @@ post http://localhost:8000/api/v1/invitations/accept '{"token":"<token>"}'
 curl -s -b $J $O/1/members; echo
 ```
 
+## Vendor businesses
+
+A **vendor business** is a vendor's shared profile (name, description,
+category, contact details, city/region). It belongs to no organization or
+market, so one profile can later apply to many markets. People manage it
+through a **vendor membership** with one role:
+
+| Action | OWNER | MEMBER |
+| --- | --- | --- |
+| View the private profile and member directory | ✓ | ✓ (no member emails) |
+| Update the profile | ✓ | — |
+| Invite, list, resend, revoke invitations | ✓ | — |
+| Remove a MEMBER | ✓ | — |
+| Transfer ownership | ✓ | — |
+| Leave | after transferring ownership | ✓ |
+
+There is exactly one owner per business (a partial unique index blocks a
+second one; creation, transfer and leave rules keep one in place). One
+account can own or belong to several businesses and hold organization
+memberships at the same time: there is no global "vendor" account type, and
+organization roles grant nothing on vendor businesses (or the other way
+round). Nothing creates a business automatically; a person creates one
+when they want to sell. Non-members get 404, and members get 403 for
+owner-only actions. The profile, including its contact email, is visible
+only to the business's members. There are no public vendor pages yet.
+
+**Category** is one of: `PRODUCE`, `MEAT_DAIRY_EGGS`, `BAKED_GOODS`,
+`PREPARED_FOOD`, `BEVERAGES`, `CRAFTS`, `FLOWERS_PLANTS`, `HEALTH_BEAUTY` or
+`OTHER`. `contact_email` is the business's public-facing contact address,
+normalized like account emails and unrelated to anyone's login email.
+
+| Endpoint (under `/api/v1`) | Body | Success |
+| --- | --- | --- |
+| `POST /vendors` | profile fields | 201 `{"business", "membership_id", "role": "OWNER"}` |
+| `GET /vendors` | `?cursor&limit` | 200 `{"items": [{"business", "membership_id", "role"}], "next_cursor"}` |
+| `GET /vendors/{id}` | — | 200 business + your role |
+| `PATCH /vendors/{id}` | any profile fields (owner) | 200 |
+| `GET /vendors/{id}/members` | `?cursor&limit` | 200 `{"items": [{"membership_id", "user_id", "name", "role", "joined_at", "email"}]}` |
+| `DELETE /vendors/{id}/members/{membership_id}` | — | 204 |
+| `POST /vendors/{id}/leave` | — | 204 |
+| `POST /vendors/{id}/transfer-ownership` | `{"membership_id"}` | 200 new owner |
+| `POST /vendors/{id}/invitations` | `{"email"}` | 201 `{"invitation", "email_sent"}` |
+| `GET /vendors/{id}/invitations` | `?cursor&limit` | 200 pending invitations |
+| `POST /vendors/{id}/invitations/{invitation_id}/resend` | — | 200 `{"invitation", "email_sent"}` |
+| `DELETE /vendors/{id}/invitations/{invitation_id}` | — | 204 |
+| `POST /vendor-invitations/accept` | `{"token"}` | 200 `{"business", "membership_id", "role", "already_member"}` |
+
+Create:
+
+```json
+{"name": "Sunny Acres Farm", "category": "PRODUCE", "contact_email": "hello@sunnyacres.example",
+ "description": "Seasonal vegetables", "phone": "+1 555 010 2000",
+ "website": "https://sunnyacres.example", "city": "Springfield", "region": "IL"}
+```
+
+Update (send only the fields to change; `""` clears an optional field):
+
+```json
+{"description": "Now with eggs", "city": ""}
+```
+
+Only these profile fields are accepted. Anything else (`id`, `role`,
+`owner`, timestamps, account ids) is rejected with 422. Validation errors:
+`name_invalid`, `contact_email_invalid`, `phone_invalid`, `website_invalid`
+(must be `http(s)://`). Other codes: `owner_must_transfer`, `already_owner`,
+`transfer_target_ineligible`, `already_member`, `invitation_pending`,
+`invitation_not_pending`, `invitation_invalid`, `invitation_email_mismatch`,
+`email_not_verified`.
+
+**Invitations** work like organization invitations. The role is always
+MEMBER. The link is `FRONTEND_BASE_URL/vendor-invitations/accept?token=…`
+and is valid for 7 days. Only the token's SHA-256 is stored. There is one
+pending invitation per email, and an expired one is replaced. Resend rotates
+the token. Accepting requires a logged-in, verified account whose email
+matches, so the token alone authorizes nothing. It also rechecks that the
+inviter is still the owner. People without an account register and verify
+first. Accepting never creates an account or a second membership. Rate
+limits: 30 invitations and 10 resends per user per hour
+(`VENDOR_RATE_LIMITS`).
+
+**Ownership transfer:** the owner picks an existing active, verified member.
+In one transaction the old owner becomes MEMBER and the target becomes OWNER.
+The owner can't leave or be removed until they transfer. All
+membership-changing operations lock the business row, so concurrent
+transfers, leaves and acceptances can't leave zero or two owners.
+
+**Future market applications** will reference one `VendorBusiness` (plus the
+account that submitted) and keep a snapshot of the profile at submission
+time, so later profile edits don't rewrite past applications. Deleting or
+archiving a business isn't supported until that interaction is designed.
+
+**Frontend:** no Next.js screens exist yet for vendor profiles or for the
+`/vendor-invitations/accept` link. Until the frontend-integration phase, use
+the API docs page (`/api/v1/docs`) or the curl helpers under [Try it with curl](#try-it-with-curl).
+
+## Organization restrictions (moderation)
+
+An organization can **restrict** an account or a vendor business from
+taking part in *its* markets. A restriction only affects participation in
+that one organization. It never:
+- deactivates the account or blocks login;
+- changes or deletes the vendor business;
+- removes any membership, or touches other organizations.
+
+Team access is also untouched: a restricted STAFF member keeps their team
+role, and restrictions aren't used for staff suspension.
+
+| Target | Blocks |
+| --- | --- |
+| `account` | Participation initiated by that person, whichever business they act for. Their businesses and colleagues aren't restricted. |
+| `vendor_business` | Participation for that business, whichever member acts for it. |
+
+An action is refused if **either** the acting account **or** the selected
+business has an effective restriction in that organization.
+
+**Who can moderate:** the organization's OWNER and ADMIN can create, list,
+view and revoke restrictions, checked against their current membership on
+every request. STAFF get 403 and non-members 404. Reasons, notes and history
+are visible only to them. The moderator, organization and timestamps always
+come from the server, never from the request.
+
+| Endpoint (under `/api/v1/organizations/{id}`) | Body / query | Success |
+| --- | --- | --- |
+| `POST /restrictions` | `{"account_id": 7, "reason": "…", "expires_at": "2026-12-31T23:59:00Z"}` or `{"vendor_business_id": 3, "reason": "…"}` | 201 restriction |
+| `GET /restrictions` | `?status=effective\|expired\|revoked&target_type=account\|vendor_business&cursor&limit` | 200 `{"items", "next_cursor"}` |
+| `GET /restrictions/{restriction_id}` | — | 200 restriction |
+| `POST /restrictions/{restriction_id}/revoke` | `{"note": "optional"}` | 200 restriction |
+
+A restriction looks like:
+
+```json
+{"id": 1, "target_type": "account", "account_id": 7, "vendor_business_id": null,
+ "status": "effective", "reason": "Repeated no-shows", "created_by_user_id": 2,
+ "created_at": "…", "expires_at": null, "revoked_at": null,
+ "revoked_by_user_id": null, "revocation_note": ""}
+```
+
+Targets are given by stable id. There is deliberately no user search or
+vendor directory; future organizer screens will take ids from applications
+and bookings. Validation codes:
+- `target_invalid`: give exactly one target;
+- `target_not_found`;
+- `reason_invalid`: the reason must be 1–1000 characters;
+- `expires_at_invalid`: the expiry must include a timezone and be in the future.
+
+**Lifecycle:** status is worked out whenever it's read, with no background
+job:
+- `revoked` if it was revoked;
+- else `expired` once `expires_at` has passed;
+- else `effective`.
+
+Records are never edited or deleted. To change a reason or duration, revoke
+it and create a new one. The rules:
+- **A second effective restriction for the same target** gets
+  `409 already_restricted`, with the existing id in `details`. Creation locks
+  the organization row, so concurrent requests can't create duplicates.
+- **Revoking twice** gets `409 already_revoked`, and the first revocation's
+  time, moderator and note are kept.
+- **Revoking an already expired restriction** gets `409 restriction_expired`.
+
+Creation and revocation also write an `OrganizationAuditEvent` that holds
+target ids only, never the reason or note.
+
+**Participation policy:** `moderation.policy.ensure_can_participate(organization_id, account=…, vendor_business=…)`
+raises `ParticipationRestricted`, which the API returns as
+`403 participation_restricted` with a generic message. It never reveals the
+reason or which record matched. It doesn't check whether the account may act
+for the business; callers do that first with `vendors.permissions.membership_for`.
+**No Django endpoint calls it yet**, because the backend has no participation
+flows so far. It must be called inside the transaction of:
+- submitting a market application (Phase 10);
+- creating a reservation or booking (Phases 11–12);
+- starting a payment for either (Phase 13).
+
+It must **not** block reading your own records, cancellations or refunds.
+Restricting someone doesn't cancel their existing applications, bookings or
+payments; those phases will define that explicitly.
+
+**Legacy app:** the existing Next.js/Prisma application, bookings and payment
+flows don't know about these restrictions and aren't enforced until they
+move to Django (Phase 20). There are no moderation screens in the frontend
+yet, and no notification emails or appeals.
+
+**Try it locally:** as an organization OWNER/ADMIN, using the `post` helper
+from [Organizations and teams](#organizations-and-teams):
+
+```bash
+post $O/1/restrictions '{"vendor_business_id": 1, "reason": "Late setup three weeks running"}'
+curl -s -b $J "$O/1/restrictions?status=effective"; echo
+post $O/1/restrictions/1/revoke '{"note": "Resolved with the vendor"}'
+```
+
 ## Checks and tests
 
 ```bash
@@ -288,13 +494,10 @@ changes under `backend/`.
 
 ## Stopping
 
-```bash
-docker compose stop           # stops PostgreSQL, keeps data
-docker compose down           # removes the container, still keeps the data volume
-```
-
-Only `docker compose down -v` deletes the data volume. Don't use it unless you
-mean to wipe the backend development database.
+Stop `runserver` with Ctrl+C. PostgreSQL can keep running. To stop it:
+`brew services stop postgresql@16` (or `pg_ctl -D /opt/homebrew/var/postgresql@16 stop`).
+Your data stays. With the optional Docker setup, `docker compose stop` keeps the
+data too; only `docker compose down -v` deletes it.
 
 ## Structure
 
@@ -323,6 +526,12 @@ backend/
     permissions.py         role rules + membership lookup/locking
     services.py            create, team management, invitations, ownership
     api.py, schemas.py     /api/v1/organizations and /api/v1/invitations
+  moderation/              organization restrictions + participation policy
+    policy.py              ensure_can_participate() for future entry points
+  vendors/                 vendor businesses, memberships, invitations
+    permissions.py         owner/member rules + membership lookup/locking
+    services.py            profile, members, invitations, ownership
+    api.py, schemas.py     /api/v1/vendors and /api/v1/vendor-invitations
   accounts/                email-login User, account API
     models.py              User, email normalization
     services.py            register, verify, login, password reset/change

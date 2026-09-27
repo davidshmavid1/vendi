@@ -6,7 +6,9 @@ Next.js app. Setup is in [README.md](README.md); database rules are in
 
 **Implemented today:** health endpoints, accounts (`/api/v1/auth/*`) and
 organizations with team memberships (`/api/v1/organizations/*`,
-`/api/v1/invitations/*`). Vendors, markets and later domains are the
+`/api/v1/invitations/*`) and vendor businesses (`/api/v1/vendors/*`,
+`/api/v1/vendor-invitations/*`), and organization restrictions
+(`/api/v1/organizations/{id}/restrictions`). Markets and later domains are the
 **intended** structure.
 
 ## Layers
@@ -37,8 +39,9 @@ same domains, not two backends.
 | Domain (app) | Owns | Status |
 | --- | --- | --- |
 | Identity (`accounts`) | Users, credentials, email verification, sessions | Implemented |
-| Organizations (`organizations`) | Organizations, memberships and roles, invitations, team audit trail | Implemented (bans: Phase 7) |
-| Vendors | Vendor businesses/profiles and the people authorized to manage them | Planned |
+| Organizations (`organizations`) | Organizations, memberships and roles, invitations, team audit trail | Implemented |
+| Moderation (`moderation`) | Organization-scoped restrictions of accounts and vendor businesses; the participation policy other domains call | Implemented (no callers yet) |
+| Vendors (`vendors`) | Vendor businesses/profiles and the people authorized to manage them | Implemented |
 | Markets | Listings, locations, event occurrences, publication | Planned |
 | Applications | Form versions, submissions, review decisions | Planned |
 | Inventory/bookings | Layouts, stalls, stall offers, reservations, bookings | Planned |
