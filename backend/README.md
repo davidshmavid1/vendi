@@ -578,10 +578,54 @@ Moderation restrictions don't affect browsing.
 
 Drafts and archived markets, and their dates, return `404` publicly.
 
-**Next phases:** Phase 9 discovery will list published markets with upcoming
-scheduled dates, using `latitude`/`longitude` where present. Applications
-(Phase 10) and stalls and bookings (Phases 11–12) will reference
-`EventOccurrence`, and must call the moderation participation policy.
+**Next phases:** Applications (Phase 10) and stalls and bookings (Phases
+11–12) will reference `EventOccurrence`, and must call the moderation
+participation policy.
+
+## Market discovery
+
+Public, no login, read-only (`markets/discovery.py`). Only **published**
+markets with at least one **upcoming scheduled** date are listed. A date counts
+while it hasn't ended, and cancelled dates never make a market eligible.
+
+| Endpoint (under `/api/v1/public`) | Returns |
+| --- | --- |
+| `GET /markets` | `{items, next_cursor}`. Each item has the market summary, `next_occurrence`, `upcoming_preview` (the next 3 scheduled dates, including the next one), and `distance_km` (nearby searches only, otherwise `null`). Default 20 per page, max 50 (`limit`); `cursor` is opaque. |
+| `GET /markets/map` | `{items, total, truncated, limit}`: markers (id, name, city, region, coordinates, next date) for markets **with coordinates** in an area. Needs a bounding box or a nearby search. At most 300 markers; `truncated` says there were more, and `total` counts them all. |
+
+**Filters** (both endpoints, all optional and combined with AND):
+
+- `q`: case-insensitive text in the name, venue, city or region (max 100 characters).
+- `market_type`: `FARMERS_MARKET` or `POPUP`.
+- `date_from` / `date_to` (`YYYY-MM-DD`, inclusive): a market matches when it has
+  a scheduled, not-yet-ended date whose **start falls on those days in the
+  market's own timezone**. The span is at most 366 days, and `date_to` can't be
+  before `date_from`.
+- `south`, `west`, `north`, `east`: a bounding box in degrees, all four
+  together. `west > east` means the box crosses the antimeridian.
+- `lat`, `lng`, `radius_km`: nearby search. **Units are kilometres**, 0 < radius ≤ 500.
+  Distance is great-circle (haversine) from the given point, and results are
+  ordered nearest first.
+
+Without a nearby search, results are ordered by the soonest next date. Markets
+without coordinates appear in the list (unless filtered by area or distance)
+but never on the map, so **list and map counts can differ**. Invalid input
+returns `400` with codes `query_invalid`, `date_range_invalid`, `bbox_invalid`,
+`coordinates_invalid`, `near_invalid` or `radius_invalid`.
+
+**Query approach:** plain PostgreSQL, **no PostGIS**. Distance is a haversine
+SQL expression over the `latitude`/`longitude` decimals. A degree bounding box
+is applied first, so it can use the partial index
+`markets_published_coords_idx` on published markets' coordinates (migration
+`markets.0002`). Each market's next date comes from a correlated subquery, and
+its preview dates from one window query per page. This fits the expected
+number of markets. If it grows past tens of thousands, move to PostGIS or a
+search service, with a documented deployment change.
+
+**Demo data (local only):** `uv run python manage.py seed_demo_markets` creates
+a demo organizer and 5 published markets with weekly dates (one without
+coordinates). It refuses to run unless `DEBUG` is on. **Never run it against
+production.**
 
 ## Checks and tests
 
@@ -708,6 +752,8 @@ in [ARCHITECTURE.md](ARCHITECTURE.md#browser-integration-and-authentication).
 The existing Auth.js login is unchanged and shares nothing with the Django
 accounts.
 
-Still to do for frontend integration: the `/api/v1` forwarding rule in
-Next.js, the sign-up/verify/login/reset screens that call these endpoints,
-and moving each workflow off Auth.js/Prisma.
+The public discovery pages (`/markets`, Phase 9) are the first Next.js screens
+backed by Django. Setting `DJANGO_API_ORIGIN` enables the `/api/v1` forwarding
+rule in `next.config.ts`; see the frontend README. Still to do: the
+sign-up/verify/login/reset screens that call these endpoints, and moving each
+workflow off Auth.js/Prisma.

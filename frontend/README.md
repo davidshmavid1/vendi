@@ -180,6 +180,57 @@ issue specific to the bundled `prisma dev` local server, so schema changes here
 were validated with `prisma db push` instead — that's a quirk of this one local
 dev server, not of the schema or the migration file.
 
+## Market discovery (`/markets`)
+
+Public pages for finding markets, with no login. They read from the Django
+backend's public discovery API, not from Prisma.
+
+- `/markets`: text search, market type, date range, "Use my location" with a
+  radius in km, a paginated list, and a map. Filters live in the URL (`q`,
+  `type`, `from`, `to`, and `area` after "Search this area"), so a view can be
+  refreshed or shared.
+- `/markets/[marketId]`: venue, address, organizer, description and upcoming
+  dates, including cancelled ones.
+
+Your device location is used only after you click "Use my location". It stays
+in page state, is sent to Django only as a search, and is never put in the URL
+or stored. On phones, a List/Map toggle switches views.
+
+**Configuration** (server-side environment variables):
+
+| Variable | Purpose |
+| --- | --- |
+| `DJANGO_API_ORIGIN` | Django origin, e.g. `http://localhost:8000`. Server pages read it at request time. `next.config.ts` forwards browser `/api/v1/*` requests to it, and that rule is fixed **at build time**, so set it for the build too (on Vercel, for the environment being built). Without it, `/markets` says discovery isn't available. |
+| `MAP_TILE_URL` | Read at request time. Raster tile URL template, e.g. `https://tiles.example.com/{z}/{x}/{y}.png`. It's sent to the browser, so use a key restricted to your domain if the provider needs one. Never put a secret here. |
+| `MAP_TILE_ATTRIBUTION` | Attribution text your tile provider requires, shown on the map. |
+
+Without `MAP_TILE_URL`, or when tiles fail to load, the page falls back to the
+list with a notice. Maps use Leaflet; there are no provider accounts and no
+paid services. **Choose a tile provider and follow its usage terms and
+attribution rules.** The public OpenStreetMap tile servers
+(`tile.openstreetmap.org`) are fine for trying it locally, but their
+[tile usage policy](https://operations.osmfoundation.org/policies/tiles/) does
+not allow production traffic from an app like this. Production needs a
+provider or self-hosted tiles chosen by the team.
+
+**Try it locally:**
+
+```bash
+# backend/ (DEBUG development settings only; never production)
+uv run python manage.py seed_demo_markets
+uv run python manage.py runserver 8000
+```
+
+```bash
+# frontend/ (.env)
+DJANGO_API_ORIGIN="http://localhost:8000"
+MAP_TILE_URL="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+MAP_TILE_ATTRIBUTION="© OpenStreetMap contributors"
+```
+
+Then run `npm run dev` and open <http://localhost:3000/markets>. `npm test`
+runs the discovery helpers' unit tests (`src/lib/discovery/logic.test.ts`).
+
 ## Hard requirements, and where they're enforced
 
 | Requirement | Where |

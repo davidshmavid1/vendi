@@ -197,3 +197,56 @@ class PublicOccurrencePage(Schema):
 
 class PublicOccurrenceDetailOut(PublicOccurrenceOut):
     market: PublicMarketOut
+
+
+# --- Discovery ------------------------------------------------------------------------
+
+
+class DiscoveryOccurrence(Schema):
+    id: int
+    starts_at: datetime
+    ends_at: datetime
+    timezone: str
+    local_date: date
+    local_start_time: time
+    local_end_time: time
+
+
+class DiscoveryMarket(Schema):
+    id: int
+    name: str
+    market_type: MarketTypeName
+    venue_name: str
+    city: str
+    region: str
+    country: str
+    latitude: Decimal | None
+    longitude: Decimal | None
+    timezone: str
+    distance_km: float | None
+    next_occurrence: DiscoveryOccurrence
+    upcoming_preview: list[DiscoveryOccurrence]
+
+
+class DiscoveryPage(Schema):
+    items: list[DiscoveryMarket]
+    next_cursor: int | None
+
+
+class MapMarker(Schema):
+    id: int
+    name: str
+    market_type: MarketTypeName
+    city: str
+    region: str
+    latitude: Decimal
+    longitude: Decimal
+    distance_km: float | None
+    next_occurrence: DiscoveryOccurrence
+
+
+class MapResult(Schema):
+    items: list[MapMarker]
+    total: int
+    truncated: bool
+    limit: int

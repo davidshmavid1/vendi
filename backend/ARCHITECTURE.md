@@ -42,7 +42,7 @@ same domains, not two backends.
 | Organizations (`organizations`) | Organizations, memberships and roles, invitations, team audit trail | Implemented |
 | Moderation (`moderation`) | Organization-scoped restrictions of accounts and vendor businesses; the participation policy other domains call | Implemented (no callers yet) |
 | Vendors (`vendors`) | Vendor businesses/profiles and the people authorized to manage them | Implemented |
-| Markets (`markets`) | Listings, locations, event occurrences, weekly recurrence, publication | Implemented (discovery: Phase 9) |
+| Markets (`markets`) | Listings, locations, event occurrences, weekly recurrence, publication, public discovery (search, filters, nearby, map markers; no PostGIS) | Implemented |
 | Applications | Form versions, submissions, review decisions | Planned |
 | Inventory/bookings | Layouts, stalls, stall offers, reservations, bookings | Planned |
 | Payments | Payment attempts, refunds, subscriptions, reconciliation | Planned |

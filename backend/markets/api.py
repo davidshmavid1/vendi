@@ -1,16 +1,19 @@
 """Market endpoints: organizer management under
 /api/v1/organizations/{id}/markets and anonymous reads under /api/v1/public."""
 
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
 from ninja import Router, Status
 
 from core.auth import session_auth
 from core.pagination import paginate
 from core.schemas import ErrorOut
-from markets import public, recurrence, services
-from markets.models import MarketStatus
+from markets import discovery, public, recurrence, services
+from markets.models import EventOccurrence, MarketStatus
 from markets.schemas import (
+    DiscoveryPage,
+    MapResult,
     MarketCreateIn,
     MarketOut,
     MarketPage,
@@ -212,6 +215,147 @@ def get_series(request, organization_id: int, market_id: int, series_id: int):
 
 
 # --- Public ------------------------------------------------------------------------------------
+
+
+def _discovery_occurrence(occurrence: EventOccurrence, market) -> dict:
+    occurrence.market = market
+    data = occurrence_dict(occurrence, public_view=True)
+    return {
+        k: data[k]
+        for k in (
+            "id",
+            "starts_at",
+            "ends_at",
+            "timezone",
+            "local_date",
+            "local_start_time",
+            "local_end_time",
+        )
+    }
+
+
+def _filters(request_params: dict) -> discovery.Filters:
+    return discovery.build_filters(**request_params)
+
+
+@public_router.get("/markets", response={200: DiscoveryPage, 400: ErrorOut, 422: ErrorOut})
+def discover_markets(
+    request,
+    q: str | None = None,
+    market_type: Literal["FARMERS_MARKET", "POPUP"] | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    south: float | None = None,
+    west: float | None = None,
+    north: float | None = None,
+    east: float | None = None,
+    lat: float | None = None,
+    lng: float | None = None,
+    radius_km: float | None = None,
+    cursor: int | None = None,
+    limit: int | None = None,
+):
+    """Search published markets with upcoming scheduled dates. One item per
+    market. ``cursor`` is an offset returned as ``next_cursor``."""
+    filters = _filters(
+        dict(
+            q=q,
+            market_type=market_type,
+            date_from=date_from,
+            date_to=date_to,
+            south=south,
+            west=west,
+            north=north,
+            east=east,
+            lat=lat,
+            lng=lng,
+            radius_km=radius_km,
+        )
+    )
+    markets, previews, next_cursor = discovery.search_page(filters, offset=cursor or 0, limit=limit)
+    items = []
+    for market in markets:
+        preview = previews.get(market.pk, [])
+        items.append(
+            {
+                **{
+                    f: getattr(market, f)
+                    for f in (
+                        "id",
+                        "name",
+                        "market_type",
+                        "venue_name",
+                        "city",
+                        "region",
+                        "country",
+                        "latitude",
+                        "longitude",
+                        "timezone",
+                    )
+                },
+                "distance_km": getattr(market, "distance_km", None),
+                "next_occurrence": _discovery_occurrence(preview[0], market),
+                "upcoming_preview": [_discovery_occurrence(o, market) for o in preview],
+            }
+        )
+    return {"items": items, "next_cursor": next_cursor}
+
+
+@public_router.get("/markets/map", response={200: MapResult, 400: ErrorOut, 422: ErrorOut})
+def discover_map(
+    request,
+    south: float | None = None,
+    west: float | None = None,
+    north: float | None = None,
+    east: float | None = None,
+    q: str | None = None,
+    market_type: Literal["FARMERS_MARKET", "POPUP"] | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    lat: float | None = None,
+    lng: float | None = None,
+    radius_km: float | None = None,
+):
+    """Markers for markets with coordinates in an area, same filters as the
+    list. At most MAP_MAX_MARKERS; ``truncated`` says the client should zoom
+    in or narrow the search."""
+    filters = _filters(
+        dict(
+            q=q,
+            market_type=market_type,
+            date_from=date_from,
+            date_to=date_to,
+            south=south,
+            west=west,
+            north=north,
+            east=east,
+            lat=lat,
+            lng=lng,
+            radius_km=radius_km,
+        )
+    )
+    markets, total, truncated = discovery.map_markers(filters)
+    next_by_id = EventOccurrence.objects.in_bulk([m.next_occurrence_id for m in markets])
+    items = [
+        {
+            "id": m.pk,
+            "name": m.name,
+            "market_type": m.market_type,
+            "city": m.city,
+            "region": m.region,
+            "latitude": m.latitude,
+            "longitude": m.longitude,
+            "distance_km": getattr(m, "distance_km", None),
+            "next_occurrence": _discovery_occurrence(next_by_id[m.next_occurrence_id], m),
+        }
+        for m in markets
+    ]
+    return {
+        "items": items,
+        "total": total,
+        "truncated": truncated,
+        "limit": discovery.MAP_MAX_MARKERS,
+    }
 
 
 @public_router.get("/markets/{market_id}", response={200: PublicMarketOut, 404: ErrorOut})
