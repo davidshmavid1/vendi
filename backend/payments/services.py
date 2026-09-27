@@ -637,8 +637,22 @@ _REFUND_STATES = {
 def _record_refund(refund_id: int, snapshot: RefundSnapshot) -> Refund:
     with transaction.atomic():
         refund = Refund.objects.select_for_update().get(pk=refund_id)
+        new_status = _REFUND_STATES.get(snapshot.status, RefundStatus.PENDING)
+        if refund.status == RefundStatus.SUCCEEDED and new_status in (
+            RefundStatus.FAILED,
+            RefundStatus.CANCELED,
+        ):
+            # Stripe: a refund can fail after succeeding (the bank returns it,
+            # up to 30 days later). For destination charges the money goes back
+            # to the platform balance, transfer reversal included: an operator
+            # must re-send it (see README -> Cancellations and refunds).
+            refund.status = new_status
+            refund.last_error = f"refund_{snapshot.status}_after_success"
+            refund.save(update_fields=["status", "last_error", "updated_at"])
+            logger.error("refund refund=%s %s after succeeding", refund.pk, snapshot.status)
+            return refund
         if refund.status not in UNRESOLVED_REFUND:
-            return refund  # final states never change
+            return refund  # otherwise final states never change (e.g. back to pending)
         refund.stripe_refund_id = snapshot.id
         refund.provider_calls += 1
         refund.last_error = ""
@@ -650,6 +664,23 @@ def _record_refund(refund_id: int, snapshot: RefundSnapshot) -> Refund:
             logger.error("refund refund=%s ended %s", refund.pk, snapshot.status)
         refund.save()
     return refund
+
+
+def sync_refund(refund_id: int) -> Refund:
+    """Bring a refund up to date with Stripe (refund webhooks). Unlike
+    ``process_refund`` it also re-reads SUCCEEDED refunds, which Stripe can
+    still fail later; it never creates one."""
+    refund = Refund.objects.get(pk=refund_id)
+    if refund.status in UNRESOLVED_REFUND:
+        return process_refund(refund.pk)
+    if refund.status != RefundStatus.SUCCEEDED or not refund.stripe_refund_id:
+        return refund
+    try:
+        snapshot = gateway().retrieve_refund(refund.stripe_refund_id)
+    except ProviderError as error:
+        logger.warning("refund sync refund=%s error=%s", refund.pk, error.code)
+        return refund
+    return _record_refund(refund.pk, snapshot)
 
 
 # --- Vendor operations ---------------------------------------------------------------------
@@ -884,7 +915,7 @@ def process_event(event_pk: int) -> None:
         if refund is None:
             note = _record_external_refund(row) or ""
         else:
-            refund = process_refund(refund.pk)
+            refund = sync_refund(refund.pk)
             if refund.status in UNRESOLVED_REFUND and refund.last_error:
                 _event_failed(row, refund.last_error)
     else:

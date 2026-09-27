@@ -1094,7 +1094,7 @@ Vendors and organizers can cancel confirmed bookings, and organizers can cancel 
 
 **Refunds** reuse Phase 13's `Refund` (reason `CANCELLATION`; at most one per payment):
 - **Intent first.** The intent is saved in the cancellation's transaction (`request_cancellation_refund`, with the payment attempt locked) before Stripe is called. Stripe is then called with no locks held and a stable idempotency key. A timeout, or a lost response after Stripe succeeded, leaves it REQUESTED, and a retry returns the same Stripe refund.
-- **Connect behavior** (destination charge with `application_fee_amount`: Stripe transfers the whole charge to the organizer, then collects the fee back):
+- **Connect behavior**, checked against Stripe's docs ("Create destination charges" → Collect fees / Issue refunds). With `application_fee_amount`, "the full charge amount is immediately transferred … the `application_fee_amount` … is then transferred back to the platform"; on refund, "a proportional amount of the transfer is reversed", and "by default the platform account keeps the funds from the application fee":
   - The refund is `paid − fee`, with `reverse_transfer=true` and `refund_application_fee=false`.
   - The transfer is reversed in proportion to the refund, so exactly the refunded amount comes back from the organizer.
   - The fee stays with Vendi. Net result: the organizer ends at 0 and Vendi keeps its fee.
@@ -1109,7 +1109,8 @@ Vendors and organizers can cancel confirmed bookings, and organizers can cancel 
   - SUCCEEDED: only when Stripe says so.
   - FAILED/CANCELED: Stripe refused it or it ended unsuccessfully.
   - REVIEW.
-  - Final states never change: a late "pending" snapshot can't undo SUCCEEDED.
+  - Stripe's current state is always re-read, so a late "pending" snapshot can't undo SUCCEEDED.
+  - **A refund can still fail after succeeding:** the bank may return it up to 30 days later, and Stripe sends `refund.failed`. The refund then moves to FAILED (`refund_failed_after_success`) and needs an operator. The booking stays cancelled.
 - **Payment-not-booked refunds:** Phase 13's compensating refunds (reason UNFULFILLED) now refund exactly what Stripe received, fee included, in the charge's currency.
 
 **External refunds:**
@@ -1136,7 +1137,9 @@ Vendors and organizers can cancel confirmed bookings, and organizers can cancel 
 
 It reports `needs_operator` for refunds in FAILED, CANCELED or REVIEW. **Operator procedure** for those:
 1. Look the payment up in the Stripe Dashboard: its refunds, disputes and transfer reversal.
-2. Settle it there.
+2. Settle it there. Keep in mind, from Stripe's destination-charge docs:
+   - **A failed or cancelled refund returns to the platform balance**, including the part reversed from the organizer's transfer. Either refund the vendor another way, or transfer the organizer's share back to their connected account.
+   - **Disputes are debited from the platform.** Recover from the organizer with a transfer reversal only if appropriate.
 3. Record the outcome.
 
 For external refunds, the webhook records them automatically. There's no endpoint for arbitrary refund amounts.

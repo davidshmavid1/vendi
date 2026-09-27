@@ -546,3 +546,20 @@ def test_only_managers_can_retry_date_cancellation(cw, api):
     body = cw.client["ADMIN"].post(url).json()
     assert body["items"]["BOOKING"] == {"DONE": 1}
     assert body["refunds"] == {"PENDING": 1}
+
+
+def test_refund_that_fails_after_succeeding_goes_to_an_operator(cw, api):
+    booking = _book(cw, api)
+    _vendor_cancel(cw, booking)
+    refund = Refund.objects.get(reason="CANCELLATION")
+    cw.stripe.settle_refund(refund.stripe_refund_id)
+    _webhook(api, "refund.updated", refund.stripe_refund_id, event_id="evt_ok")
+    assert Refund.objects.get(pk=refund.pk).status == RefundStatus.SUCCEEDED
+    # Weeks later the bank returns it (Stripe sends refund.failed).
+    cw.stripe.settle_refund(refund.stripe_refund_id, status="failed")
+    _webhook(api, "refund.failed", refund.stripe_refund_id, event_id="evt_failed")
+    failed = Refund.objects.get(pk=refund.pk)
+    assert (failed.status, failed.last_error) == ("FAILED", "refund_failed_after_success")
+    assert Booking.objects.get(pk=booking.pk).status == "CANCELLED"  # booking unaffected
+    out = cw.client["A"].get(f"/vendors/{cw.business_a.pk}/bookings/{booking.pk}").json()
+    assert out["refund"]["status"] == "FAILED"
