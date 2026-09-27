@@ -7,7 +7,8 @@ unchanged and still uses Prisma, Auth.js and Stripe for everything today.
 Implemented so far: the foundation (configuration, database, versioned API,
 errors, logging, tests), independent email accounts with session login, and
 organizations with team memberships and invitations, shared vendor
-business profiles, and organization-scoped participation restrictions. Markets, applications, bookings and payments come in later
+business profiles, organization-scoped participation restrictions, and
+markets with scheduled and recurring event dates. Markets, applications, bookings and payments come in later
 phases.
 
 ## Prerequisites
@@ -79,6 +80,7 @@ Optional, for the Django admin at `/admin/`: `uv run python manage.py createsupe
 | `/api/v1/organizations/*`, `/api/v1/invitations/*` | Organizations and teams: see [below](#organizations-and-teams). |
 | `/api/v1/vendors/*`, `/api/v1/vendor-invitations/*` | Vendor businesses: see [below](#vendor-businesses). |
 | `/api/v1/organizations/{id}/restrictions` | Organization restrictions: see [below](#organization-restrictions-moderation). |
+| `/api/v1/organizations/{id}/markets/*`, `/api/v1/public/*` | Markets and event dates: see [below](#markets-and-event-dates). |
 | `/api/v1/docs` | Interactive API docs (Swagger UI). Development only. |
 | `/api/v1/openapi.json` | OpenAPI schema. Development only. |
 
@@ -477,6 +479,110 @@ curl -s -b $J "$O/1/restrictions?status=effective"; echo
 post $O/1/restrictions/1/revoke '{"note": "Resolved with the vendor"}'
 ```
 
+## Markets and event dates
+
+A **market** is an organization's ongoing farmers market or popup. It has a
+name, description, type (`FARMERS_MARKET` or `POPUP`), venue name, address
+(`address_line1`, `address_line2`, `city`, `region`, `postal_code`, and a
+two-letter uppercase `country`), optional `latitude`/`longitude`, and an IANA
+`timezone`. Coordinates are sent together or not at all, and must be within
+-90..90 and -180..180. They're never guessed or geocoded. An **event date**
+(`EventOccurrence`) is one scheduled event of a market. Later phases
+(applications, stalls, bookings) will point at event dates, so they're never
+deleted.
+
+**Status and lifecycle**
+
+| Status | Who sees it | Rules |
+| --- | --- | --- |
+| `DRAFT` | Organization members only | Freely editable. |
+| `PUBLISHED` | Anyone, via `/api/v1/public/...` | To publish, a market needs `name`, `venue_name`, `address_line1`, `city`, `country`, `timezone` **and** at least one upcoming scheduled date. While published, the venue fields can't be blanked (enforced by a database CHECK). Publishing twice is a no-op. |
+| `ARCHIVED` | Nobody publicly (public endpoints return 404) | Final: no edits, dates or publishing. All records and dates are kept. |
+
+Coordinates aren't required to publish. Markets without them just won't get
+map markers in discovery (Phase 9).
+
+**Event dates**
+- Start and end are instants with a UTC offset (`2026-10-03T08:00:00-05:00`).
+  Times without an offset are rejected, and `ends_at` must be after
+  `starts_at`.
+- A market can't have two dates with the same start (a unique constraint).
+  Overlapping dates are allowed.
+- Responses give UTC instants plus `local_date`, `local_start_time` and
+  `local_end_time` in the market's `timezone`.
+- **Cancel** keeps the record (`status: CANCELLED`, with an optional public
+  message) and can't be undone. Cancelled dates can't be edited. Cancelling
+  doesn't touch any applications, bookings or payments; none exist yet.
+- The market's timezone is locked once any date exists, because changing it
+  would shift every date's local time.
+
+**Weekly recurrence** (`POST …/series`):
+
+```json
+{"frequency": "WEEKLY", "interval_weeks": 1, "weekdays": [3, 6],
+ "start_date": "2026-10-01", "end_date": "2026-12-31",
+ "local_start_time": "08:00", "local_end_time": "12:30"}
+```
+
+- **Supported:** weekly only; every 1–12 weeks; weekdays as ISO numbers
+  (1 = Monday … 7 = Sunday); inclusive start and end dates.
+- **Limits:** `start_date` not in the past (in the market's timezone); a
+  span under 366 days; at most **200 dates**; and the end time after the
+  start time on the same day, so overnight events must be created one by one.
+- Anything else (daily, monthly, extra fields) is rejected with `422` or
+  `400 recurrence_*`. Nothing is approximated.
+- **Weeks are counted** from the Monday-based week containing `start_date`.
+  With an interval of 2, that week, the week two later, and so on.
+- **Daylight saving:** local times are kept, so 8:00 stays 8:00 across a
+  change. If the start or end time falls in a skipped or repeated hour on
+  any date (e.g. 2:30 on a spring-forward day), the whole request is refused
+  with `400 recurrence_dst_conflict`, listing the dates. Nothing is shifted.
+- **Generation:** it runs in one transaction, locking the market row, so
+  concurrent requests run one at a time.
+- **Idempotent:** sending exactly the same definition again returns `200`
+  with `already_existed: true` and creates nothing.
+- **Your edits are kept:** each generated date remembers its original slot,
+  so a date you moved or cancelled is never recreated or reset.
+- **Clashes:** if any generated start clashes with an existing date that isn't
+  that series' own, the request gets `409 occurrence_conflict` listing the
+  clashes, and nothing is created.
+- **Series editing** ("edit all future dates") isn't supported yet. Edit or
+  cancel individual dates instead.
+
+**Permissions:** OWNER and ADMIN create and edit everything. STAFF can read
+markets, dates and series. Non-members get 404. The organization always
+comes from the URL and the caller's membership, never from the request body.
+Moderation restrictions don't affect browsing.
+
+| Endpoint (under `/api/v1/organizations/{id}`) | Body / query | Success |
+| --- | --- | --- |
+| `GET /markets` | `?status&cursor&limit` | 200 `{"items", "next_cursor"}` |
+| `POST /markets` | market fields (`name`, `market_type`, `timezone` required) | 201 market |
+| `GET` / `PATCH /markets/{market_id}` | any market fields | 200 market |
+| `POST /markets/{market_id}/publish` | — | 200 (400 `publication_requirements` with `details`) |
+| `POST /markets/{market_id}/archive` | — | 200 |
+| `GET /markets/{market_id}/occurrences` | `?series_id&cursor&limit` (cursor = last `starts_at`) | 200 |
+| `POST /markets/{market_id}/occurrences` | `{"starts_at", "ends_at"}` | 201 |
+| `PATCH /markets/{market_id}/occurrences/{occurrence_id}` | `{"starts_at"?, "ends_at"?}` | 200 |
+| `POST /markets/{market_id}/occurrences/{occurrence_id}/cancel` | `{"message"?}` | 200 |
+| `POST /markets/{market_id}/series` | series definition | 201 new, 200 existing |
+| `GET /markets/{market_id}/series/{series_id}` | — | 200 series metadata + `occurrence_count` |
+
+**Public, no login:**
+
+| Endpoint (under `/api/v1/public`) | Returns |
+| --- | --- |
+| `GET /markets/{market_id}` | Published market: venue, address, coordinates, timezone, `organizer.name`. No organization ids, contacts or status. |
+| `GET /markets/{market_id}/occurrences` | Dates that haven't ended yet, in start order, **including cancelled ones** with their message. Paginated by `starts_at`. |
+| `GET /occurrences/{occurrence_id}` | One date plus its public market. |
+
+Drafts and archived markets, and their dates, return `404` publicly.
+
+**Next phases:** Phase 9 discovery will list published markets with upcoming
+scheduled dates, using `latitude`/`longitude` where present. Applications
+(Phase 10) and stalls and bookings (Phases 11–12) will reference
+`EventOccurrence`, and must call the moderation participation policy.
+
 ## Checks and tests
 
 ```bash
@@ -526,6 +632,9 @@ backend/
     permissions.py         role rules + membership lookup/locking
     services.py            create, team management, invitations, ownership
     api.py, schemas.py     /api/v1/organizations and /api/v1/invitations
+  markets/                 markets, event dates, weekly recurrence, public reads
+    recurrence.py          pure weekly-schedule + daylight-saving logic
+    public.py              what anonymous visitors may see
   moderation/              organization restrictions + participation policy
     policy.py              ensure_can_participate() for future entry points
   vendors/                 vendor businesses, memberships, invitations

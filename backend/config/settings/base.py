@@ -21,6 +21,7 @@ INSTALLED_APPS = [
     "organizations",
     "vendors",
     "moderation",
+    "markets",
 ]
 
 MIDDLEWARE = [
@@ -102,6 +103,10 @@ VENDOR_RATE_LIMITS = {
     "invitation_create_user": "30/h",
     "invitation_resend_user": "10/h",
 }
+
+# Recurrence generation limits (markets.recurrence).
+MARKET_SERIES_MAX_DAYS = 366
+MARKET_SERIES_MAX_OCCURRENCES = 200
 
 # How many reverse proxies in front of Django append to X-Forwarded-For.
 # 0 = ignore the header and use REMOTE_ADDR (the header is client-controlled).
