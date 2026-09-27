@@ -54,3 +54,6 @@ next-env.d.ts
 # editor
 .zed/
 .vscode/
+
+# PyCharm project settings
+.idea/
