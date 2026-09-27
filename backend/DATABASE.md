@@ -14,7 +14,8 @@ conventions new models follow, how to work with migrations, and the
 > (ApplicationIntake, Application, ApplicationEvent), the `layouts` models
 > (LayoutVersion, Stall, OccurrenceLayout, StallOffer), the `reservations` model
 > (Reservation), the `payments` models (PaymentAccount, PaymentAttempt, Refund,
-> StripeEvent), the `bookings` model (Booking), plus Django's session and
+> StripeEvent), the `bookings` models (Booking, BookingCancellation,
+> OccurrenceCancellation, OccurrenceCancellationItem), plus Django's session and
 > cache tables. Everything else
 > under [Proposed data model](#proposed-data-model) is a design proposal. None
 > of those tables exist yet.
@@ -135,6 +136,11 @@ Current state:
 | `reservations.0002_payment_pending` | Reservation `payment_pending` (default false; CHECK: only while HELD) and unique `(id, offer, occurrence, application, vendor_business)`, the target of Booking's composite FK (Phase 13) | Additive (new column with a default, constraints only). Reversible. |
 | `payments.0001_initial` | PaymentAccount (one per organization; unique `(livemode, stripe_account_id)`; CHECKs: `acct_` format, fee ≤ 10000 bps), PaymentAttempt (partial unique `reservation` WHERE status IN CREATING/OPEN/SUCCEEDED; unique idempotency key; partial unique `(livemode, checkout_session_id)` and `(livemode, payment_intent_id)` when set; unique `(id, reservation)`; CHECKs: amount 1–1e9, `0 ≤ fee ≤ amount`, supported currency, session expiry after creation, session id once created, fulfillment set exactly when SUCCEEDED), Refund (one compensating refund per attempt; unique Stripe id when set; amount > 0), StripeEvent (unique event id; partial index on unprocessed). All foreign keys PROTECT. | Additive. Reversible on an empty database; rolling back drops the tables **and their data**. |
 | `bookings.0001_initial` | Booking (unique reservation, unique payment attempt; CHECKs: paid ⇔ attempt and price > 0, free ⇔ no attempt and price 0; price range; currency). Composite FKs `(reservation, offer, occurrence, application, vendor_business)` → Reservation and `(payment_attempt, reservation)` → PaymentAttempt. | Additive. Reversible on an empty database; rolling back drops the table **and its data**. |
+| `payments.0002_fee_on_top` | PaymentAttempt `fee_on_top` (false for existing rows); amount CHECK widened to price plus fee | Additive. Reversible. |
+| `markets.0003_vendor_cancellation_cutoff` | Market `vendor_cancellation_cutoff_hours` (nullable; CHECK ≤ 8760) (Phase 14) | Additive (nullable column). Reversible. |
+| `reservations.0003_cancelled_and_policy_snapshot` | Reservation status CANCELLED, `cancelled_at`, `policy_captured_at`, `policy_vendor_cutoff_hours`; lifecycle CHECK replaced (`…_v2`: a CANCELLED booking keeps `confirmed_at`; `cancelled_at` set exactly when CANCELLED) | Additive columns; CHECK swap only (existing rows satisfy both). Reversible while no CANCELLED rows exist. |
+| `payments.0003_cancellation_refunds` | Refund reasons CANCELLATION and EXTERNAL, status REVIEW, `refund_application_fee` (true for existing rows); one CANCELLATION refund per attempt; reason CHECK | Additive. Reversible while no rows use the new values. |
+| `bookings.0002_cancellations` | Booking `status`, `cancelled_at`, policy snapshot; BookingCancellation (one per booking; entitlement ≥ 0; free ⇒ 0); OccurrenceCancellation (one per date) and OccurrenceCancellationItem (unique per run and reservation; partial index on PENDING) | Additive. Reversible on an empty database; rolling back drops the new tables **and their data**. |
 | `moderation.0001_initial` | OrganizationRestriction (CHECKs: exactly one of account/vendor_business, non-blank reason, revocation fields set together, `expires_at > created_at`; indexes on (organization, account) and (organization, vendor_business)) | Additive. Reversible on an empty database; rolling back drops the table **and its history**. |
 
 Foreign keys to users and organizations from these tables are `PROTECT`:
@@ -312,7 +318,6 @@ Boundaries to keep:
 | --- | --- |
 | Account linking and merging with legacy users (email login, uniqueness and normalization are decided: see README → Accounts). Email-address changes. | Existing Data Migration / later accounts work |
 | Whether an Application targets a market season or a single occurrence. Whether one approval covers many dates. | Applications |
-| Refund and cancellation policy rules. | Cancellations & Refunds |
 | Public identifiers (slug vs. UUID) for markets and organizations. | Markets |
 | Whether to use composite foreign keys or derived scoping for each tenant-crossing relationship. | Each domain phase |
 | Row-level security. | Revisit after domain tables exist |

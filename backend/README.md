@@ -947,7 +947,7 @@ browser returning from Stripe is never proof of payment.
 | --- | --- |
 | `PaymentAccount` | Organization → Stripe connected account, `livemode`, `charges_enabled`, `application_fee_bps` (Vendi's fee rate, added on top of stall prices). |
 | `PaymentAttempt` | One Checkout Session for one reservation. Snapshot of amount, currency, fee and destination; its own `idempotency_key`; `checkout_session_id` and `payment_intent_id`, each unique per `livemode`. **`status`** is the payment: CREATING → OPEN → SUCCEEDED, or EXPIRED, CANCELED, FAILED. A separate **`fulfillment`** (FULFILLED/UNFULFILLED) says whether a paid attempt got its stall. `provider_calls`, `last_error` and `last_synced_at` support recovery. |
-| `Refund` | Compensating refund of an UNFULFILLED payment: REQUESTED → PENDING → SUCCEEDED, or FAILED/CANCELED (operator). |
+| `Refund` | A refund of a payment: compensation for an UNFULFILLED payment, a booking CANCELLATION (Phase 14), or an EXTERNAL one recorded from Stripe. REQUESTED → PENDING → SUCCEEDED, or FAILED/CANCELED/REVIEW (operator). |
 | `StripeEvent` | One row per webhook event id (unique), with `processed_at`, `attempts` and `last_error`. |
 | `Booking` | One per reservation (unique). It references the reservation, offer, date, application and business (composite FK, so they must match the reservation), with the price snapshot, `payment_required`, and the payment attempt, whose own composite FK means it must be for the same reservation. |
 
@@ -1000,7 +1000,7 @@ Constraints worth knowing:
 - **Paid but unfulfilled.** If the payment is valid but can't be fulfilled (inventory lost, a late payment for a closed attempt, a restriction or cancellation meanwhile, or a verification mismatch), the attempt becomes SUCCEEDED + **UNFULFILLED**. The hold ends, and a full `Refund` is requested in the same transaction.
   - The refund is sent to Stripe after commit with its own idempotency key.
   - The vendor sees "refunding" and never "booked".
-  - This is compensation only; cancellations and refund policies are Phase 14.
+  - This is compensation only; booking cancellations and their refunds are described in Cancellations and refunds.
 - **Terminal states.** SUCCEEDED is never overwritten: an older `expired` event after a payment changes nothing. Final refund states never change.
 
 **Cancel checkout** (`POST …/checkout/cancel`, OWNER):
@@ -1050,6 +1050,107 @@ No worker runs it yet: **an operator (or a cron job) must run it.** Webhooks cov
 **Tests:**
 - `tests/test_payments.py` and `tests/test_payments_concurrency.py` replace the gateway (`payments/gateway.py`, the only module that imports `stripe`) with `tests/fake_stripe.py`. It keeps Stripe's idempotency semantics, can simulate timeouts, lost responses and refusals, and checks webhook signatures with the real verification code.
 - No test calls Stripe. End-to-end test-mode verification needs `STRIPE_SECRET_KEY` (test), `STRIPE_WEBHOOK_SECRET` and a linked test connected account.
+
+## Cancellations and refunds
+
+Vendors and organizers can cancel confirmed bookings, and organizers can cancel whole dates (`bookings/cancellations.py`). Cancelling a booking, releasing its stall and settling its refund are **separate states**. A cancelled booking may still have a refund in flight.
+
+**Approved policy:**
+- **Cutoff.** Each market may set a vendor cancellation cutoff, `Market.vendor_cancellation_cutoff_hours` (`PUT …/markets/{m}/cancellation-policy`, OWNER/ADMIN). There's **no default**: without one, vendors can't cancel on their own and must contact the organizer.
+- **Before the cutoff**, the vendor OWNER may cancel for a refund of **what they paid minus Vendi's service fee**. The fee is added on top at checkout, so the refund equals the stall price.
+- **After the cutoff**, vendors can't cancel; they contact the organizer. There's no "cancel without refund" option.
+- **Organizer and date cancellations** refund the same amount: paid minus Vendi's fee.
+- **Free bookings** refund nothing.
+- **Not supported:** partial refunds, percentage schedules, cancellation fees, credits and exceptions.
+
+**Terms snapshot:**
+- A hold records the market's cutoff when it is taken (`Reservation.policy_captured_at`, `policy_vendor_cutoff_hours`). The stall page shows those terms before checkout, and the booking copies them.
+- Later policy edits never change existing holds or bookings.
+- **Bookings made before this phase** have no snapshot. Vendors can't cancel them online (`manual_review`: contact the organizer); organizers can.
+- **Exact boundary:** vendors may cancel strictly before `starts_at − cutoff hours`. At that instant or later the answer is `409 cutoff_passed`.
+  - The deadline uses the date's **current** `starts_at` (an aware UTC instant).
+  - The hours are absolute, so daylight-saving changes don't shift it.
+
+**Records:**
+- **`BookingCancellation`** (one per booking, unique) stores:
+  - the kind (VENDOR, ORGANIZER or EVENT), who asked and in what role (`requested_as`);
+  - `reason`, visible to both parties, and `internal_note`, for the organizer only and never returned to vendors;
+  - the request and completion times;
+  - the terms used, the refund rule and entitlement, and the Refund it created.
+- **Existing records are never edited or deleted.** The Booking keeps its payment references and gets `status` CONFIRMED → CANCELLED plus `cancelled_at`.
+- **The reservation becomes CANCELLED** (a new state that doesn't occupy inventory) and keeps its `confirmed_at` for history.
+
+**Previews and confirmation:**
+- `GET …/bookings/{id}/cancellation` returns a server-computed preview: whether cancelling is allowed (with a problem code and message if not), whether the caller may act, amount paid, fee kept, refund, currency, deadline, and that the stall is released.
+- `POST …/cancel` must echo `expected_refund_minor` and `currency`. The outcome is recalculated under the locks, and if it changed the request fails with `409 stale_preview` (details carry the current amount) and nothing happens.
+- Repeating a cancellation returns the existing outcome: the stall is not released twice and no second refund is created.
+- Vendor members and organization STAFF may preview but not cancel.
+- Participation restrictions never block cancelling or reading.
+
+**Inventory release:** `reservations.services.release_for_cancellation` is the only release operation for cancellations.
+- It moves CONFIRMED (or an unpaid HELD) to CANCELLED, exactly once, inside the cancellation's transaction. Lock order: date → reservation → booking → payment attempt.
+- It refuses a hold whose checkout is still unsettled (`payment_in_progress`).
+- **Availability still depends on the whole date:** a cancelled date's public layout and availability return 404, and holds, checkouts and free confirmations check the date's status under its lock. Released stalls on a cancelled date are never bookable.
+
+**Refunds** reuse Phase 13's `Refund` (reason `CANCELLATION`; at most one per payment):
+- **Intent first.** The intent is saved in the cancellation's transaction (`request_cancellation_refund`, with the payment attempt locked) before Stripe is called. Stripe is then called with no locks held and a stable idempotency key. A timeout, or a lost response after Stripe succeeded, leaves it REQUESTED, and a retry returns the same Stripe refund.
+- **Connect behavior** (destination charge with `application_fee_amount`: Stripe transfers the whole charge to the organizer, then collects the fee back):
+  - The refund is `paid − fee`, with `reverse_transfer=true` and `refund_application_fee=false`.
+  - The transfer is reversed in proportion to the refund, so exactly the refunded amount comes back from the organizer.
+  - The fee stays with Vendi. Net result: the organizer ends at 0 and Vendi keeps its fee.
+  - Stripe's processing fee isn't returned on refunds and stays a platform cost.
+- **Over-refund guard.**
+  - Refunds in REQUESTED, PENDING, SUCCEEDED or REVIEW count against the amount paid; one that doesn't fit is recorded as `REVIEW exceeds_refundable`.
+  - Before the first send, the charge is checked at Stripe. A dispute (`disputed`) or money refunded outside Vendi (`refunded_externally`) means **REVIEW**: nothing is sent and an operator reconciles it.
+  - Stripe refusals `charge_disputed` and `charge_already_refunded` also mean REVIEW.
+- **States:**
+  - REQUESTED: saved, maybe not sent yet, or the outcome is unknown.
+  - PENDING: Stripe accepted it.
+  - SUCCEEDED: only when Stripe says so.
+  - FAILED/CANCELED: Stripe refused it or it ended unsuccessfully.
+  - REVIEW.
+  - Final states never change: a late "pending" snapshot can't undo SUCCEEDED.
+- **Payment-not-booked refunds:** Phase 13's compensating refunds (reason UNFULFILLED) now refund exactly what Stripe received, fee included, in the charge's currency.
+
+**External refunds:**
+- A `refund.*` webhook for a refund Vendi didn't make is looked up at Stripe. If it belongs to one of Vendi's payments, it's recorded as `Refund` reason EXTERNAL.
+- It counts against later refunds (which then go to review), and **it never cancels a booking by itself**.
+
+**Date cancellation** is the existing Phase 8 `POST …/occurrences/{o}/cancel` (OWNER/ADMIN); there's no second path.
+- **In the same transaction:**
+  - the date becomes CANCELLED, so it immediately stops accepting applications, holds, checkouts and free confirmations;
+  - `markets.signals.occurrence_cancelled` makes `bookings` record an `OccurrenceCancellation` and one `OccurrenceCancellationItem` per reservation still holding or booking a stall;
+  - unpaid holds are released right away.
+- **Right after commit** (database only), bookings are cancelled with kind EVENT and their refunds recorded. The date's message becomes the cancellation reason.
+- **Stripe work runs later, in bounded batches:** `reconcile_payments`, or the organizer's **Retry now** (`POST …/occurrences/{o}/cancellation/process`, 20 items).
+  - **Open checkout:** the session is expired at Stripe first, then the hold is released.
+  - **Payment arrived first:** Phase 13's rule applies, because the date is no longer eligible: paid-but-unfulfilled, and everything received is refunded.
+  - **Unknown creation outcome, or a delayed payment still settling:** the item stays PENDING (`payment_outcome_pending`) until Stripe decides, and a late success can never revive the booking or the date.
+- **Refunds sent:** booking refunds go out as each item is processed.
+- **Progress:** `GET …/occurrences/{o}/cancellation` shows the item counts by kind and status, the refund counts, and `pending`. The date stays cancelled even if some refunds fail.
+- **Recurrence series** are never cancelled wholesale.
+
+**Recovery.** `reconcile_payments` now:
+- processes pending date-cancellation items, then does everything it did before: lost webhooks, checkout creation and expiry, pending refunds, linked accounts, lapsed holds;
+- is idempotent and bounded per category.
+
+It reports `needs_operator` for refunds in FAILED, CANCELED or REVIEW. **Operator procedure** for those:
+1. Look the payment up in the Stripe Dashboard: its refunds, disputes and transfer reversal.
+2. Settle it there.
+3. Record the outcome.
+
+For external refunds, the webhook records them automatically. There's no endpoint for arbitrary refund amounts.
+
+**Endpoints:**
+- **Vendor** (`/vendors/{b}/bookings/{id}`):
+  - `GET …/cancellation`: preview (any member).
+  - `POST …/cancel` (OWNER).
+- **Organizer** (`/organizations/{org}`):
+  - `GET …/bookings/{id}/cancellation` (any member).
+  - `POST …/bookings/{id}/cancel` (OWNER/ADMIN; `reason` is required, `internal_note` is optional).
+  - `GET …/markets/{m}/occurrences/{o}/cancellation`.
+  - `POST …/markets/{m}/occurrences/{o}/cancellation/process` (OWNER/ADMIN).
+- **Booking responses** now include `status`, `terms`, `cancellation` (with `internal_note` only for organizers) and the cancellation `refund` with its own status.
 
 ## Checks and tests
 
