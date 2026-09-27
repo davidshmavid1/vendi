@@ -44,6 +44,9 @@ class ReservationOut(Schema):
     expired_at: datetime | None
     released_at: datetime | None
     confirmed_at: datetime | None
+    # A checkout for this hold is open or its outcome isn't known yet; the
+    # hold can't lapse or be released meanwhile.
+    payment_pending: bool
     # The server's clock when this response was made, so countdowns don't
     # depend on the visitor's clock.
     server_time: datetime

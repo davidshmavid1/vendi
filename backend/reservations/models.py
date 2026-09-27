@@ -14,6 +14,10 @@ A HELD row whose ``expires_at`` has passed no longer blocks anything: every
 operation that could be affected first switches such rows to EXPIRED under
 the date's lock, so correctness never depends on a scheduled job.
 Reservations are never deleted.
+
+``payment_pending`` (Phase 13) marks a hold with a checkout whose outcome
+isn't known yet. Such a hold never lapses or gets released until the
+payments domain clears the flag, so a payable session never loses its stall.
 """
 
 from django.conf import settings
@@ -34,8 +38,9 @@ class ReservationStatus(models.TextChoices):
     CONFIRMED = "CONFIRMED", "Confirmed"
 
 
-# Statuses that occupy inventory. HELD rows past ``expires_at`` are switched
-# to EXPIRED before any new claim, so this list never depends on the clock.
+# Statuses that occupy inventory. HELD rows past ``expires_at`` (and not
+# awaiting a payment outcome) are switched to EXPIRED before any new claim,
+# so this list never depends on the clock.
 OCCUPYING = (ReservationStatus.HELD, ReservationStatus.CONFIRMED)
 
 
@@ -46,11 +51,15 @@ class ReservationQuerySet(models.QuerySet):
         return self.filter(
             Q(status=ReservationStatus.CONFIRMED)
             | Q(status=ReservationStatus.HELD, expires_at__gt=now)
+            | Q(status=ReservationStatus.HELD, payment_pending=True)
         )
 
     def lapsed(self, now):
-        """Holds whose time is up but that are still marked HELD."""
-        return self.filter(status=ReservationStatus.HELD, expires_at__lte=now)
+        """Holds whose time is up but that are still marked HELD. A hold
+        awaiting a payment outcome never lapses."""
+        return self.filter(
+            status=ReservationStatus.HELD, expires_at__lte=now, payment_pending=False
+        )
 
 
 class Reservation(models.Model):
@@ -89,6 +98,8 @@ class Reservation(models.Model):
         related_name="+",
     )
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    # A checkout for this hold is open or its outcome is unknown (Phase 13).
+    payment_pending = models.BooleanField(default=False)
     created_at = models.DateTimeField()
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -150,6 +161,15 @@ class Reservation(models.Model):
                 ),
                 name="reservations_lifecycle_fields_match",
             ),
+            models.CheckConstraint(
+                condition=Q(payment_pending=False) | Q(status="HELD"),
+                name="reservations_payment_pending_only_held",
+            ),
+            # Target of Booking's composite foreign key (bookings.0001).
+            models.UniqueConstraint(
+                fields=["id", "offer", "occurrence", "application", "vendor_business"],
+                name="reservations_booking_key",
+            ),
         ]
         indexes = [
             models.Index(fields=["status", "expires_at"], name="reservations_status_exp_idx"),
@@ -161,6 +181,10 @@ class Reservation(models.Model):
     def status_at(self, now) -> str:
         """The status to show: a lapsed hold reads as EXPIRED even before the
         row itself is switched."""
-        if self.status == ReservationStatus.HELD and self.expires_at <= now:
+        if (
+            self.status == ReservationStatus.HELD
+            and self.expires_at <= now
+            and not self.payment_pending
+        ):
             return ReservationStatus.EXPIRED
         return self.status

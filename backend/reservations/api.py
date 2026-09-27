@@ -1,6 +1,7 @@
 """Stall hold endpoints. Handlers only translate HTTP; rules live in
 reservations/services.py. There is deliberately no endpoint that confirms a
-reservation: that is services.confirm_hold, for trusted server code (Phase 13).
+reservation directly: payments (payments/api.py) confirms one only after a
+verified payment, or for a free stall.
 
 - Vendor: /api/v1/vendors/{business_id}/reservations[/{id}[/release]]
 - Public: /api/v1/public/occurrences/{id}/stall-availability
@@ -32,7 +33,7 @@ _ERRORS = {400: ErrorOut, 401: ErrorOut, 403: ErrorOut, 404: ErrorOut, 409: Erro
 _RATES = settings.RESERVATION_RATE_LIMITS
 
 
-def _out(reservation: Reservation) -> dict:
+def reservation_out(reservation: Reservation) -> dict:
     now = timezone.now()
     occurrence = reservation.occurrence
     return {
@@ -58,6 +59,7 @@ def _out(reservation: Reservation) -> dict:
         or (reservation.expires_at if reservation.status_at(now) == "EXPIRED" else None),
         "released_at": reservation.released_at,
         "confirmed_at": reservation.confirmed_at,
+        "payment_pending": reservation.payment_pending,
         "server_time": now,
     }
 
@@ -75,7 +77,7 @@ def hold(request, business_id: int, payload: HoldIn):
         request.auth, business_id, offer_id=payload.offer_id, request_key=payload.request_key
     )
     reservation = services.get_for_business(request.auth, business_id, result.reservation.pk)
-    return Status(201 if result.created else 200, _out(reservation))
+    return Status(201 if result.created else 200, reservation_out(reservation))
 
 
 @router.get("/{business_id}/reservations", response={200: ReservationPage, **_ERRORS})
@@ -91,14 +93,14 @@ def list_reservations(
         request.auth, business_id, occurrence_id=occurrence_id, status=status
     )
     items, next_cursor = paginate(queryset, cursor=cursor, limit=limit)
-    return {"items": [_out(r) for r in items], "next_cursor": next_cursor}
+    return {"items": [reservation_out(r) for r in items], "next_cursor": next_cursor}
 
 
 @router.get(
     "/{business_id}/reservations/{reservation_id}", response={200: ReservationOut, **_ERRORS}
 )
 def get_reservation(request, business_id: int, reservation_id: int):
-    return _out(services.get_for_business(request.auth, business_id, reservation_id))
+    return reservation_out(services.get_for_business(request.auth, business_id, reservation_id))
 
 
 @router.post(
@@ -107,7 +109,7 @@ def get_reservation(request, business_id: int, reservation_id: int):
 )
 def release(request, business_id: int, reservation_id: int):
     services.release_hold(request.auth, business_id, reservation_id)
-    return _out(services.get_for_business(request.auth, business_id, reservation_id))
+    return reservation_out(services.get_for_business(request.auth, business_id, reservation_id))
 
 
 @public_router.get(

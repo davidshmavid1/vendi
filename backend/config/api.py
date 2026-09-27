@@ -19,6 +19,9 @@ from markets.api import router as markets_router
 from moderation.api import router as moderation_router
 from organizations.api import invitations_router
 from organizations.api import router as organizations_router
+from payments.api import organizer_router as organizer_payments_router
+from payments.api import router as payments_router
+from payments.api import webhook_router as payments_webhook_router
 from reservations.api import public_router as public_reservations_router
 from reservations.api import router as reservations_router
 from vendors.api import invitations_router as vendor_invitations_router
@@ -48,4 +51,7 @@ api.add_router("/invitations", invitations_router)
 api.add_router("/vendors", vendors_router)
 api.add_router("/vendors", vendor_applications_router)
 api.add_router("/vendors", reservations_router)
+api.add_router("/vendors", payments_router)
+api.add_router("/organizations", organizer_payments_router)
+api.add_router("/payments", payments_webhook_router)
 api.add_router("/vendor-invitations", vendor_invitations_router)

@@ -42,3 +42,10 @@ class Conflict(DomainError):
     """The request conflicts with current state, e.g. a duplicate (409)."""
 
     default_code = "conflict"
+
+
+class ServiceUnavailable(DomainError):
+    """A dependency (e.g. the payment provider) couldn't be reached and the
+    outcome is unknown; retrying the same request is safe (503)."""
+
+    default_code = "service_unavailable"
