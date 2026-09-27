@@ -66,17 +66,14 @@ def overlapping_pairs(rects: list[Rect]) -> list[tuple[int, int]]:
     return sorted(pairs)
 
 
-def check_layout(canvas_width: int, canvas_height: int, currency: str, stalls: list[dict]) -> str:
-    """Validate the whole submitted layout. Returns the normalized currency;
-    raises InvalidRequest (``layout_invalid``) listing every problem."""
+def check_plan(canvas_width: int, canvas_height: int, stalls: list[dict]) -> None:
+    """Validate a whole layout version's plan (canvas and stalls). Raises
+    InvalidRequest (``layout_invalid``) listing every problem."""
     problems: list[dict] = []
 
     def problem(message: str, **where) -> None:
         problems.append({**where, "message": message})
 
-    currency = currency.strip().upper()
-    if not CURRENCY_PATTERN.fullmatch(currency) or currency not in SUPPORTED_CURRENCIES:
-        problem(f"currency must be one of {', '.join(SUPPORTED_CURRENCIES)}.", field="currency")
     for field, value in (("canvas_width", canvas_width), ("canvas_height", canvas_height)):
         if not 1 <= value <= MAX_CANVAS:
             problem(f"{field} must be between 1 and {MAX_CANVAS}.", field=field)
@@ -110,12 +107,6 @@ def check_layout(canvas_width: int, canvas_height: int, currency: str, stalls: l
             problem("Width and height must be at least 1.", field="width", **where)
         elif rect.right > canvas_width or rect.bottom > canvas_height:
             problem("The stall must fit inside the canvas.", field="x", **where)
-        if not 0 <= stall["price_minor"] <= MAX_PRICE_MINOR:
-            problem(
-                f"Price must be between 0 and {MAX_PRICE_MINOR} minor units.",
-                field="price_minor",
-                **where,
-            )
         physical = (stall["physical_width"], stall["physical_depth"], stall["physical_unit"])
         if any(v not in (None, "") for v in physical):
             width, depth, unit = physical
@@ -144,4 +135,42 @@ def check_layout(canvas_width: int, canvas_height: int, currency: str, stalls: l
         )
     if problems:
         raise InvalidRequest("The layout has problems.", code="layout_invalid", details=problems)
+
+
+def check_offers(currency: str, offers: list[dict], stall_ids: set[int]) -> str:
+    """Validate a date's offers: one per stall of the selected layout version,
+    every stall covered, integer prices in range, a supported currency.
+    Returns the normalized currency; raises InvalidRequest (``offers_invalid``)."""
+    problems: list[dict] = []
+    currency = currency.strip().upper()
+    if not CURRENCY_PATTERN.fullmatch(currency) or currency not in SUPPORTED_CURRENCIES:
+        problems.append(
+            {
+                "field": "currency",
+                "message": f"currency must be one of {', '.join(SUPPORTED_CURRENCIES)}.",
+            }
+        )
+    seen: set[int] = set()
+    for index, offer in enumerate(offers):
+        stall_id = offer["stall_id"]
+        where = {"index": index, "stall_id": stall_id}
+        if stall_id not in stall_ids:
+            problems.append({**where, "message": "This stall isn't in the selected layout."})
+        elif stall_id in seen:
+            problems.append({**where, "message": "Listed twice."})
+        seen.add(stall_id)
+        if not 0 <= offer["price_minor"] <= MAX_PRICE_MINOR:
+            problems.append(
+                {
+                    **where,
+                    "field": "price_minor",
+                    "message": f"Price must be between 0 and {MAX_PRICE_MINOR} minor units.",
+                }
+            )
+    for stall_id in sorted(stall_ids - seen):
+        problems.append(
+            {"stall_id": stall_id, "message": "Every stall in the layout needs an offer."}
+        )
+    if problems:
+        raise InvalidRequest("Some offers are invalid.", code="offers_invalid", details=problems)
     return currency

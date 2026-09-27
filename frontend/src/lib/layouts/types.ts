@@ -13,25 +13,50 @@ export type StallOut = {
   physical_width: string | null;
   physical_depth: string | null;
   physical_unit: PhysicalUnit | null;
-  enabled: boolean;
-  price_minor: number;
 };
 
-export type LayoutOut = {
+/** A market's layout version: the physical plan. Locked once a date uses it. */
+export type VersionOut = {
   id: number;
-  occurrence_id: number;
   market_id: number;
+  number: number;
   canvas_width: number;
   canvas_height: number;
-  currency: string;
-  currency_exponent: number;
   revision: number;
-  published: boolean;
-  published_at: string | null;
+  locked: boolean;
+  locked_at: string | null;
+  based_on_id: number | null;
   stalls: StallOut[];
 };
 
-export type PublicStall = Omit<StallOut, "enabled"> & { offered: boolean };
+export type VersionSummary = {
+  id: number;
+  number: number;
+  canvas_width: number;
+  canvas_height: number;
+  revision: number;
+  locked: boolean;
+  based_on_id: number | null;
+  stall_count: number;
+  date_count: number;
+};
+
+export type OfferOut = { id: number; stall_id: number; price_minor: number; currency: string; enabled: boolean };
+
+/** One date's selected version and its offers (prices). */
+export type DateLayoutOut = {
+  occurrence_id: number;
+  market_id: number;
+  layout_version: VersionOut;
+  currency: string | null;
+  currency_exponent: number | null;
+  revision: number;
+  published: boolean;
+  published_at: string | null;
+  offers: OfferOut[];
+};
+
+export type PublicStall = StallOut & { offer_id: number | null; offered: boolean; price_minor: number | null };
 
 export type PublicLayout = {
   occurrence_id: number;

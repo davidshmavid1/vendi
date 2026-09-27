@@ -8,7 +8,7 @@ from django.utils import timezone
 from accounts.models import User
 from core.exceptions import DomainError
 from layouts import services
-from layouts.models import Stall, StallLayout
+from layouts.models import LayoutVersion, OccurrenceLayout, Stall
 from markets import services as market_services
 from organizations import services as org_services
 
@@ -30,7 +30,7 @@ def _setup():
     return owner, org, market, occurrence
 
 
-def _stall(label, x, price):
+def _stall(label, x=0, **extra):
     return {
         "label": label,
         "description": "",
@@ -41,8 +41,7 @@ def _stall(label, x, price):
         "physical_width": None,
         "physical_depth": None,
         "physical_unit": None,
-        "enabled": True,
-        "price_minor": price,
+        **extra,
     }
 
 
@@ -66,70 +65,113 @@ def _race(*calls):
         thread.start()
     for thread in threads:
         thread.join()
-    assert not [r for r in results if isinstance(r, str) and r.startswith("unexpected")], results
+    unexpected = [r for r in results if isinstance(r, str) and r.startswith("unexpected")]
+    assert not unexpected, results
     return results
 
 
+def _outcomes(results):
+    return sorted(r if isinstance(r, str) else "ok" for r in results)
+
+
 @pytest.mark.parametrize("_", range(3))
-def test_concurrent_edits_of_the_same_revision_have_one_winner(_):
-    owner, org, market, occurrence = _setup()
-    services.save_layout(
-        owner,
-        org.pk,
-        market.pk,
-        occurrence.pk,
-        expected_revision=None,
-        canvas_width=100,
-        canvas_height=50,
-        currency="USD",
-        stalls=[],
+def test_concurrent_edits_of_one_version_have_one_winner(_):
+    owner, org, market, _occurrence = _setup()
+    version, _stalls = services.create_version(
+        owner, org.pk, market.pk, canvas_width=100, canvas_height=50, stalls=[]
     )
 
-    def edit(label, price):
-        return lambda: services.save_layout(
+    def edit(label):
+        return lambda: services.save_version(
             owner,
             org.pk,
             market.pk,
-            occurrence.pk,
+            version.pk,
             expected_revision=1,
             canvas_width=100,
             canvas_height=50,
-            currency="USD",
-            stalls=[_stall(label, 0, price)],
+            stalls=[_stall(label)],
         )
 
-    results = _race(edit("A1", 100), edit("B1", 200))
-    assert sorted(r if isinstance(r, str) else "saved" for r in results) == [
-        "saved",
-        "stale_revision",
-    ]
-    layout = StallLayout.objects.get()
-    assert layout.revision == 2
-    # Exactly one editor's stalls, never a mix.
-    assert Stall.objects.count() == 1
+    assert _outcomes(_race(edit("A1"), edit("B1"))) == ["ok", "stale_revision"]
+    assert LayoutVersion.objects.get().revision == 2
+    assert Stall.objects.count() == 1  # one editor's stalls, never a mix
 
 
 @pytest.mark.parametrize("_", range(3))
-def test_concurrent_creation_makes_one_layout(_):
-    owner, org, market, occurrence = _setup()
+def test_concurrent_version_creation_numbers_uniquely(_):
+    owner, org, market, _occurrence = _setup()
 
-    def create(label):
-        return lambda: services.save_layout(
+    def create():
+        return services.create_version(
+            owner, org.pk, market.pk, canvas_width=100, canvas_height=50, stalls=[]
+        )
+
+    assert _outcomes(_race(create, create, create)) == ["ok", "ok", "ok"]
+    assert sorted(LayoutVersion.objects.values_list("number", flat=True)) == [1, 2, 3]
+
+
+@pytest.mark.parametrize("_", range(3))
+def test_concurrent_date_saves_have_one_winner(_):
+    owner, org, market, occurrence = _setup()
+    version, stalls = services.create_version(
+        owner, org.pk, market.pk, canvas_width=100, canvas_height=50, stalls=[_stall("A1")]
+    )
+
+    def assign(price):
+        return lambda: services.save_date_layout(
             owner,
             org.pk,
             market.pk,
             occurrence.pk,
             expected_revision=None,
-            canvas_width=100,
-            canvas_height=50,
+            layout_version_id=version.pk,
             currency="USD",
-            stalls=[_stall(label, 0, 1)],
+            offers=[{"stall_id": stalls[0].pk, "price_minor": price, "enabled": True}],
         )
 
-    results = _race(create("A1"), create("B1"))
-    assert sorted(r if isinstance(r, str) else "saved" for r in results) == [
-        "saved",
-        "stale_revision",
-    ]
-    assert StallLayout.objects.count() == 1
-    assert Stall.objects.count() == 1
+    assert _outcomes(_race(assign(100), assign(200))) == ["ok", "stale_revision"]
+    assert OccurrenceLayout.objects.get().revision == 1
+
+
+@pytest.mark.parametrize("_", range(3))
+def test_version_edit_never_lands_after_a_date_uses_it(_):
+    owner, org, market, occurrence = _setup()
+    version, stalls = services.create_version(
+        owner, org.pk, market.pk, canvas_width=100, canvas_height=50, stalls=[_stall("A1")]
+    )
+
+    def edit():
+        return services.save_version(
+            owner,
+            org.pk,
+            market.pk,
+            version.pk,
+            expected_revision=1,
+            canvas_width=100,
+            canvas_height=50,
+            stalls=[{**_stall("A1", x=50), "id": stalls[0].pk}],
+        )
+
+    def assign():
+        return services.save_date_layout(
+            owner,
+            org.pk,
+            market.pk,
+            occurrence.pk,
+            expected_revision=None,
+            layout_version_id=version.pk,
+            currency="USD",
+            offers=[{"stall_id": stalls[0].pk, "price_minor": 100, "enabled": True}],
+        )
+
+    results = _race(edit, assign)
+    version.refresh_from_db()
+    assert version.locked_at is not None
+    if "layout_version_locked" in results:
+        # The date got the plan first; the edit was refused.
+        assert Stall.objects.get().x == 0
+    else:
+        # The edit finished before the date took the (edited) plan.
+        assert _outcomes(results) == ["ok", "ok"]
+        assert (version.revision, Stall.objects.get().x) == (2, 50)

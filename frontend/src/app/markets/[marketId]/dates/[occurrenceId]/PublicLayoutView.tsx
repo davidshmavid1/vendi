@@ -9,7 +9,7 @@ import { physicalSize, type PublicLayout, type PublicStall } from "@/lib/layouts
 export function PublicLayoutView({ layout }: { layout: PublicLayout }) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected = layout.stalls.find((s) => s.id === selectedId) ?? null;
-  const price = (s: PublicStall) => formatMinor(s.price_minor, layout.currency, layout.currency_exponent);
+  const price = (s: PublicStall) => formatMinor(s.price_minor ?? 0, layout.currency, layout.currency_exponent);
   const { canvas_width: w, canvas_height: h } = layout;
   const fontSize = Math.max(1, Math.min(w, h) / 25);
 

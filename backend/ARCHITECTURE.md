@@ -44,7 +44,7 @@ same domains, not two backends.
 | Vendors (`vendors`) | Vendor businesses/profiles and the people authorized to manage them | Implemented |
 | Markets (`markets`) | Listings, locations, event occurrences, weekly recurrence, publication, public discovery (search, filters, nearby, map markers; no PostGIS) | Implemented |
 | Applications (`applications`) | Per-date intake settings and versioned questions, submissions with question and vendor snapshots, withdrawal, review decisions and their history | Implemented (Phase 10) |
-| Layouts (`layouts`) | Per-date stall layouts: canvas, rectangular stalls, labels, integer minor-unit prices, publication | Implemented (Phase 11) |
+| Layouts (`layouts`) | Layout versions per market (canvas, rectangular stalls; immutable once used), each date's selected version, per-date stall offers (integer minor-unit prices), publication | Implemented (Phase 11) |
 | Inventory/bookings | Reservations, holds and bookings of layout stalls | Planned |
 | Payments | Payment attempts, refunds, subscriptions, reconciliation | Planned |
 

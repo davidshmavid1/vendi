@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { LayoutEditor } from "./LayoutEditor";
+import { DatePricing } from "./DatePricing";
 
-export const metadata: Metadata = { title: "Stall layout · Vendi" };
+export const metadata: Metadata = { title: "Stalls and prices · Vendi" };
 
 export default async function Page({
   params,
@@ -12,6 +12,6 @@ export default async function Page({
   const { organizationId, marketId, occurrenceId } = await params;
   if (![organizationId, marketId, occurrenceId].every((v) => /^\d+$/.test(v))) notFound();
   return (
-    <LayoutEditor organizationId={Number(organizationId)} marketId={Number(marketId)} occurrenceId={Number(occurrenceId)} />
+    <DatePricing organizationId={Number(organizationId)} marketId={Number(marketId)} occurrenceId={Number(occurrenceId)} />
   );
 }
