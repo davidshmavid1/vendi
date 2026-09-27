@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 import pytest
+from django.conf import settings
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -10,6 +11,7 @@ from layouts.models import StallOffer
 from moderation import services as moderation_services
 from organizations import services as org_services
 from payments import services
+from payments.gateway import AccountSnapshot, StripeGateway
 from payments.models import (
     AttemptStatus,
     Fulfillment,
@@ -24,7 +26,7 @@ from reservations.models import Reservation, ReservationStatus
 from tests.fake_stripe import FakeStripe, signed_event
 from tests.test_reservations import HOLD, at, world  # noqa: F401 (fixture)
 
-SESSION = timedelta(seconds=31 * 60)
+SESSION = timedelta(seconds=settings.CHECKOUT_SESSION_SECONDS)
 
 
 @pytest.fixture
@@ -176,6 +178,48 @@ def test_checkout_needs_a_linked_account_that_can_take_charges(paid):
         "payments_unavailable",
     )
     assert not Reservation.objects.get(pk=reservation.pk).payment_pending
+
+
+def test_checkout_is_unavailable_without_a_configured_provider(paid):
+    # A linked account but no STRIPE_SECRET_KEY: refuse up front instead of
+    # starting an attempt that can never reach Stripe.
+    previous = services.set_gateway(StripeGateway("", "whsec_x"))
+    try:
+        reservation = _hold(paid)
+        response = _checkout(paid, reservation)
+    finally:
+        services.set_gateway(previous)
+    assert (response.status_code, response.json()["error"]["code"]) == (
+        409,
+        "payments_unavailable",
+    )
+    assert PaymentAttempt.objects.count() == 0
+    assert not Reservation.objects.get(pk=reservation.pk).payment_pending
+
+
+def test_creation_that_never_gets_an_answer_is_abandoned_after_the_session_expiry(paid):
+    start = timezone.now()
+    with at(start):
+        reservation = _hold(paid)
+        paid.stripe.fail("create_session", *["timeout"] * 5)
+        assert _checkout(paid, reservation).status_code == 503
+    # Before any session could have expired, the stall stays pending.
+    with at(start + SESSION):
+        services.reconcile()
+        assert _attempt(reservation).status == AttemptStatus.CREATING
+        assert Reservation.objects.get(pk=reservation.pk).payment_pending
+    # Well after: any session is expired and was never shown, so give up.
+    with at(start + SESSION + services.ABANDON_CREATING_AFTER):
+        services.reconcile()
+        attempt = _attempt(reservation)
+        assert attempt.status == AttemptStatus.FAILED
+        assert attempt.last_error.startswith("abandoned_")
+        reservation.refresh_from_db()
+        assert not reservation.payment_pending
+        response = paid.client["B"].post(
+            paid.url_b, {"offer_id": paid.offers[0].pk, "request_key": "b1"}
+        )
+        assert response.status_code == 201, response.json()
 
 
 def test_checkout_rechecks_eligibility(paid):
@@ -689,3 +733,28 @@ def test_link_stripe_account_command_checks_with_stripe(world, stripe):  # noqa:
     )
     with pytest.raises(Exception, match="didn't confirm"):
         call_command("link_stripe_account", world.org.pk, "acct_missing")
+
+
+def test_link_stripe_account_requires_the_transfers_capability(world, stripe):  # noqa: F811
+    stripe.accounts["acct_pending"] = AccountSnapshot("acct_pending", False, False)
+    call_command("link_stripe_account", world.org.pk, "acct_pending")
+    assert PaymentAccount.objects.get().charges_enabled is False
+
+
+def test_reconcile_rechecks_linked_accounts(paid):
+    later = timezone.now() + services.ACCOUNT_RECHECK_AFTER
+    paid.stripe.accounts["acct_test123"] = AccountSnapshot("acct_test123", False, False)
+    with at(later):
+        assert services.reconcile()["accounts"] == 1
+    assert PaymentAccount.objects.get().charges_enabled is False
+    reservation = _hold(paid, key="after-recheck")
+    assert _checkout(paid, reservation).json()["error"]["code"] == "payments_unavailable"
+    # Recently checked accounts aren't asked again.
+    calls = paid.stripe.count("retrieve_account")
+    services.reconcile()
+    assert paid.stripe.count("retrieve_account") == calls
+    # Transfers active again: checkout comes back.
+    paid.stripe.accounts["acct_test123"] = AccountSnapshot("acct_test123", True, False)
+    with at(later + services.ACCOUNT_RECHECK_AFTER * 2):
+        services.reconcile()
+    assert PaymentAccount.objects.get().charges_enabled is True

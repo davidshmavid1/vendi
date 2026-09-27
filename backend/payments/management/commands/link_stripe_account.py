@@ -1,7 +1,9 @@
 """Link an organization to its Stripe connected account (operator step).
 
-The account must already exist and be able to accept charges; Stripe is
-asked directly. There is no self-serve onboarding in the Django app yet.
+The account must already exist; Stripe is asked directly. Checkout is
+offered only while its ``transfers`` capability is active, since destination
+charges transfer each payment to it (``reconcile_payments`` re-checks it).
+There is no self-serve onboarding in the Django app yet.
 """
 
 import re
@@ -48,11 +50,15 @@ class Command(BaseCommand):
                 defaults={
                     "stripe_account_id": account.id,
                     "livemode": livemode,
-                    "charges_enabled": account.charges_enabled and account.details_submitted,
+                    "charges_enabled": account.transfers_active,
                     "application_fee_bps": fee_bps,
                     "verified_at": timezone.now(),
                 },
             )
-        state = "can accept charges" if account.charges_enabled else "can NOT accept charges yet"
+        state = (
+            "can receive payments"
+            if account.transfers_active
+            else "can NOT receive payments yet (transfers capability isn't active)"
+        )
         mode = "live" if livemode else "test"
         self.stdout.write(f"Linked {organization.name} to {account.id} ({mode}); {state}.")

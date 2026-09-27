@@ -71,6 +71,13 @@ from vendors.permissions import membership_for, require_owner
 
 logger = logging.getLogger("vendi.payments")
 
+# A CREATING attempt whose outcome is still unknown this long after its
+# session's expiry is closed as FAILED. Any session Stripe did create for it
+# has expired by then, and its URL never reached the vendor, so nobody can
+# pay it. Without this, a persistent error (missing or revoked key) would
+# keep the stall pending forever.
+ABANDON_CREATING_AFTER = timedelta(minutes=10)
+
 _gateway = None
 
 
@@ -187,7 +194,11 @@ def _prepare_attempt(actor: User, reservation_id: int) -> PaymentAttempt:
     account = PaymentAccount.objects.filter(
         organization_id=occurrence.market.organization_id, charges_enabled=True
     ).first()
-    if account is None or account.livemode != gateway().key_livemode():
+    if (
+        account is None
+        or not gateway().is_configured()
+        or account.livemode != gateway().key_livemode()
+    ):
         raise payments_unavailable()
     if (
         PaymentAttempt.objects.filter(reservation=reservation).count()
@@ -280,6 +291,8 @@ def _create_session(attempt_id: int) -> PaymentAttempt:
         if error.definitive:
             # Stripe refused this key's request, so no session exists for it.
             _close_attempt(attempt.pk, AttemptStatus.FAILED, error=error.code)
+        elif timezone.now() >= attempt.session_expires_at + ABANDON_CREATING_AFTER:
+            _close_attempt(attempt.pk, AttemptStatus.FAILED, error=f"abandoned_{error.code}"[:100])
         else:
             PaymentAttempt.objects.filter(pk=attempt.pk).update(
                 provider_calls=attempt.provider_calls + 1,
@@ -718,6 +731,36 @@ def _event_failed(row: StripeEvent, code: str):
     raise ServiceUnavailable("Event processing will be retried.", code="event_retry")
 
 
+# --- Connected accounts --------------------------------------------------------------------
+
+# How often reconcile re-checks a linked account with Stripe. The platform
+# webhook ignores connected-account events, so this is how a restricted
+# account stops being offered for checkout.
+ACCOUNT_RECHECK_AFTER = timedelta(hours=1)
+
+
+def refresh_account(account_pk: int) -> PaymentAccount:
+    """Re-read a linked connected account from Stripe. Checkout is offered
+    only while its ``transfers`` capability is active (destination charges
+    transfer funds to it). Raises ProviderError when Stripe can't be reached."""
+    account = PaymentAccount.objects.get(pk=account_pk)
+    try:
+        snapshot = gateway().retrieve_account(account.stripe_account_id)
+        ready = snapshot.transfers_active
+    except ProviderError as error:
+        if not error.definitive:
+            raise
+        # The account is gone or the platform lost access to it.
+        logger.error("payment account=%s check refused: %s", account.pk, error.code)
+        ready = False
+    if account.charges_enabled != ready:
+        logger.warning("payment account=%s ready changed to %s", account.pk, ready)
+    PaymentAccount.objects.filter(pk=account.pk).update(
+        charges_enabled=ready, verified_at=timezone.now(), updated_at=timezone.now()
+    )
+    return PaymentAccount.objects.get(pk=account.pk)
+
+
 # --- Reconciliation ------------------------------------------------------------------------
 
 
@@ -725,7 +768,14 @@ def reconcile(limit: int = 100) -> dict:
     """Recover everything a lost webhook or an interrupted request could
     leave behind. Idempotent and bounded (``limit`` per category)."""
     now = timezone.now()
-    counts = {"events": 0, "attempts": 0, "refunds": 0, "errors": 0, "expired_holds": 0}
+    counts = {
+        "events": 0,
+        "attempts": 0,
+        "refunds": 0,
+        "accounts": 0,
+        "errors": 0,
+        "expired_holds": 0,
+    }
 
     def attempt_step(fn, key):
         try:
@@ -753,6 +803,14 @@ def reconcile(limit: int = 100) -> dict:
 
     for refund in Refund.objects.filter(status__in=UNRESOLVED_REFUND).order_by("pk")[:limit]:
         attempt_step(lambda r=refund: process_refund(r.pk), "refunds")
+
+    if gateway().is_configured():
+        stale_accounts = PaymentAccount.objects.filter(
+            livemode=gateway().key_livemode(),
+            verified_at__lte=now - ACCOUNT_RECHECK_AFTER,
+        ).order_by("verified_at")[:limit]
+        for account in stale_accounts:
+            attempt_step(lambda a=account: refresh_account(a.pk), "accounts")
 
     counts["expired_holds"] = reservations.expire_holds()
     counts["needs_operator"] = Refund.objects.filter(

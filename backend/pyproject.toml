@@ -10,7 +10,7 @@ dependencies = [
     "psycopg[binary]>=3.3,<4",
     "dj-database-url>=3.1,<4",
     "python-dotenv>=1.2,<2",
-    "stripe>=15.6.1",
+    "stripe>=15.6.1,<16",
 ]
 
 [dependency-groups]

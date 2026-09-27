@@ -126,10 +126,11 @@ STRIPE_SECRET_KEY = ""
 STRIPE_WEBHOOK_SECRET = ""
 # Live keys are ignored unless a deployment explicitly opts in.
 STRIPE_ALLOW_LIVE = False
-# Stripe requires a Checkout Session to last 30 minutes to 24 hours; a
-# minute of margin keeps retried create calls valid. Starting checkout
-# extends the stall hold to the session's expiry.
-CHECKOUT_SESSION_SECONDS = 31 * 60
+# Stripe requires a Checkout Session to last 30 minutes to 24 hours from
+# when it receives the create call. Five minutes of margin keeps a retried
+# create valid (the SDK's own retries alone can take about a minute).
+# Starting checkout extends the stall hold to the session's expiry.
+CHECKOUT_SESSION_SECONDS = 35 * 60
 # Checkout sessions one hold may start (only after earlier ones failed or
 # expired), so retries can't extend a hold indefinitely.
 CHECKOUT_MAX_ATTEMPTS = 3

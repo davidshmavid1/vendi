@@ -39,7 +39,7 @@ class FakeStripe:
         self.calls: list[str] = []
         self.failures: dict[str, list[str]] = {}
         self.refund_status = "pending"
-        self.accounts = {"acct_test123": AccountSnapshot("acct_test123", True, True, False)}
+        self.accounts = {"acct_test123": AccountSnapshot("acct_test123", True, False)}
         self._verifier = StripeGateway("", WEBHOOK_SECRET)
         self._n = 0
 
@@ -93,6 +93,9 @@ class FakeStripe:
 
     def key_livemode(self) -> bool:
         return False
+
+    def is_configured(self) -> bool:
+        return True
 
     def _around(self, method, do):
         self.calls.append(method)

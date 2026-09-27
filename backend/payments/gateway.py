@@ -81,8 +81,9 @@ class EventSnapshot:
 @dataclass(frozen=True)
 class AccountSnapshot:
     id: str
-    charges_enabled: bool
-    details_submitted: bool
+    # Destination charges need the connected account's ``transfers``
+    # capability; ``charges_enabled`` is about charging on that account.
+    transfers_active: bool
     livemode: bool | None
 
 
@@ -116,6 +117,9 @@ class StripeGateway:
             if secret_key
             else None
         )
+
+    def is_configured(self) -> bool:
+        return self._client is not None
 
     # -- helpers -------------------------------------------------------------------------
 
@@ -223,10 +227,10 @@ class StripeGateway:
 
     def retrieve_account(self, account_id: str) -> AccountSnapshot:
         account = _plain(self._call(lambda: self._client.v1.accounts.retrieve(account_id)))
+        capabilities = account.get("capabilities") or {}
         return AccountSnapshot(
             id=account["id"],
-            charges_enabled=bool(account.get("charges_enabled")),
-            details_submitted=bool(account.get("details_submitted")),
+            transfers_active=capabilities.get("transfers") == "active",
             livemode=account.get("livemode"),
         )
 

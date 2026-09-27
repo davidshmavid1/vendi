@@ -32,14 +32,17 @@ STRIPE_ACCOUNT_ID = r"^acct_[A-Za-z0-9]+$"
 
 class PaymentAccount(models.Model):
     """An organization's Stripe connected account, linked by an operator
-    (``manage.py link_stripe_account``) after Stripe confirms it can accept
-    charges. There is no self-serve onboarding in the Django app yet."""
+    (``manage.py link_stripe_account``) after Stripe confirms it exists.
+    There is no self-serve onboarding in the Django app yet."""
 
     organization = models.OneToOneField(
         Organization, on_delete=models.PROTECT, related_name="payment_account"
     )
     stripe_account_id = models.CharField(max_length=64)
     livemode = models.BooleanField()
+    # Whether checkout may send payments to this account: its ``transfers``
+    # capability was active when last checked (link_stripe_account, then
+    # reconcile_payments hourly).
     charges_enabled = models.BooleanField(default=False)
     # Platform's cut in basis points (100 = 1%), as in the legacy
     # Organization.applicationFeeBps.

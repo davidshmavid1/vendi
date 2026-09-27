@@ -933,7 +933,7 @@ browser returning from Stripe is never proof of payment.
   uv run python manage.py link_stripe_account <organization_id> acct_123 [--fee-bps 100]
   ```
 
-  The command asks Stripe for the account and records whether it can take charges. Until an organization is linked, checkout returns `409 payments_unavailable`; free stalls still work.
+  The command asks Stripe for the account and records whether it can receive payments: its `transfers` capability must be `active`, because destination charges transfer each payment to it. `reconcile_payments` re-checks linked accounts hourly, so an account Stripe restricts stops being offered. Until an organization is linked and ready, or while `STRIPE_SECRET_KEY` is unset, checkout returns `409 payments_unavailable`; free stalls still work.
 
 **Records** (no card data, secrets or webhook payloads are stored):
 
@@ -968,7 +968,7 @@ Constraints worth knowing:
 - Stripe requires a Checkout Session to last **30 minutes to 24 hours**, so a 15-minute session isn't possible.
 - Policy:
   - A hold lasts `RESERVATION_HOLD_SECONDS` (15 minutes) before checkout.
-  - Starting checkout extends it to the session's expiry, `CHECKOUT_SESSION_SECONDS` = 31 minutes (one minute of margin so a retried create stays valid).
+  - Starting checkout extends it to the session's expiry, `CHECKOUT_SESSION_SECONDS` = 35 minutes (five minutes of margin, because Stripe measures the 30-minute minimum from when it receives the create call, and a retried create must stay valid).
   - While `payment_pending` is set, the stall can't be lost, even after `expires_at`, until Stripe's answer is known: paid, expired, cancelled, or creation refused.
 - Bounds:
   - Only one live attempt at a time.
@@ -1008,14 +1008,16 @@ Constraints worth knowing:
 - **Recording:** each event is stored once (unique event id) and marked processed only after its effects commit. If Stripe can't be reached while processing, the endpoint returns `503`, so Stripe redelivers and the event stays retryable.
 - **Ignored events** (acknowledged, recorded as ignored): events from connected accounts, events from the other mode, and sessions that aren't Vendi's.
 - **Stripe setup** (test mode): add an endpoint for `https://<backend>/api/v1/payments/stripe/webhook` with events `checkout.session.completed`, `checkout.session.expired`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `refund.created`, `refund.updated` and `refund.failed`.
+  - Create the endpoint with API version `2026-08-26.dahlia`, the version stripe-python 15.x (capped `<16`) uses for API calls, so event payloads and API responses match.
   - Locally: `stripe listen --forward-to localhost:8000/api/v1/payments/stripe/webhook` and use the secret it prints.
   - This endpoint is separate from the legacy Next.js one (`/api/webhooks/stripe`), and each has its own signing secret.
 
 **Recovery:** `uv run python manage.py reconcile_payments [--limit 100]` is idempotent, bounded per category, and logs ids and error codes only. It:
 - reprocesses unprocessed webhook events (lost or failed processing);
-- retries CREATING attempts older than 30 seconds (interrupted checkout creation);
+- retries CREATING attempts older than 30 seconds (interrupted checkout creation). One still unanswered 10 minutes after its session's expiry is closed as FAILED (`abandoned_…`): any session Stripe created has expired and its link never reached the vendor. This bounds how long a missing or revoked key can keep a stall pending;
 - re-checks OPEN attempts that are past their session expiry, or not synced for 5 minutes (lost webhooks, payments pending local confirmation, abandoned sessions);
 - sends or re-checks unresolved refunds;
+- re-checks linked connected accounts not verified in the last hour;
 - expires lapsed holds;
 - reports refunds Stripe refused (FAILED/CANCELED), which need an operator.
 

@@ -409,7 +409,7 @@ requires-dist = [
     { name = "django-ninja", specifier = ">=1.7.1,<2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3,<4" },
     { name = "python-dotenv", specifier = ">=1.2,<2" },
-    { name = "stripe", specifier = ">=15.6.1" },
+    { name = "stripe", specifier = ">=15.6.1,<16" },
 ]
 
 [package.metadata.requires-dev]
