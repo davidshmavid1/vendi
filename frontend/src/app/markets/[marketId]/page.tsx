@@ -4,6 +4,9 @@ import { notFound } from "next/navigation";
 import { Badge, Card } from "@/components/ui";
 import { getPublic } from "@/lib/djangoApi";
 import { formatOccurrence, MARKET_TYPES, type DiscoveryOccurrence, type MarketType } from "@/lib/discovery/logic";
+import { intakeMessage, type IntakeState } from "@/lib/applications/logic";
+
+type ApplicationWindow = { occurrence_id: number; state: IntakeState; opens_at: string | null; closes_at: string | null };
 
 type PublicMarket = {
   id: number;
@@ -62,7 +65,11 @@ export default async function MarketDetailPage({ params }: { params: Promise<{ m
   }
 
   const m = market.data;
-  const dates = await getPublic<{ items: PublicOccurrence[] }>(`/markets/${marketId}/occurrences?limit=20`);
+  const [dates, windows] = await Promise.all([
+    getPublic<{ items: PublicOccurrence[] }>(`/markets/${marketId}/occurrences?limit=20`),
+    getPublic<{ items: ApplicationWindow[] }>(`/markets/${marketId}/application-windows`),
+  ]);
+  const windowFor = new Map(windows.ok ? windows.data.items.map((w) => [w.occurrence_id, w]) : []);
   const address = [m.address_line1, m.address_line2, [m.city, m.region].filter(Boolean).join(", "), m.postal_code, m.country]
     .filter(Boolean)
     .join(" · ");
@@ -110,6 +117,7 @@ export default async function MarketDetailPage({ params }: { params: Promise<{ m
                 {date.status === "CANCELLED" && date.cancellation_message && (
                   <p className="mt-1 text-zinc-600 dark:text-zinc-400">{date.cancellation_message}</p>
                 )}
+                <ApplicationLink marketId={m.id} window={windowFor.get(date.id)} zone={date.timezone} />
               </li>
             ))}
           </ul>
@@ -117,8 +125,24 @@ export default async function MarketDetailPage({ params }: { params: Promise<{ m
       </section>
 
       <p className="mt-8 rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">
-        Vendor applications for this market aren&apos;t available on Vendi yet.
+        Vendors: dates with open applications show an Apply link. An approved application confirms you&apos;re accepted
+        for that date; stalls and payment are handled separately.
       </p>
     </main>
+  );
+}
+
+function ApplicationLink({ marketId, window, zone }: { marketId: number; window?: ApplicationWindow; zone: string }) {
+  if (!window || window.state === "not_accepting" || window.state === "closed") return null;
+  if (window.state === "not_open_yet") {
+    return <p className="mt-1 text-xs text-zinc-500">{intakeMessage(window.state, window.opens_at, zone)}</p>;
+  }
+  return (
+    <Link
+      href={`/markets/${marketId}/dates/${window.occurrence_id}/apply`}
+      className="mt-2 inline-block rounded-md border border-zinc-300 px-3 py-1 text-xs font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+    >
+      Apply as a vendor
+    </Link>
   );
 }

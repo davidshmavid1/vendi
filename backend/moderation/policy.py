@@ -6,8 +6,9 @@ authorization: callers must separately verify that ``account`` is allowed to
 act for ``vendor_business`` (vendors.permissions.membership_for) before
 calling it.
 
-Future entry points that must call ``ensure_can_participate`` inside their
-transaction: submitting a market application (Phase 10), creating a
+Entry points that must call ``ensure_can_participate`` inside their
+transaction: submitting a market application (applications.services.submit;
+approval re-checks with ``is_restricted``), and in future phases creating a
 reservation or booking (Phases 11-12), and starting a new payment for either
 (Phase 13). Reading one's own records, cancelling, and refunds must *not*
 call it.

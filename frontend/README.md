@@ -231,6 +231,36 @@ MAP_TILE_ATTRIBUTION="© OpenStreetMap contributors"
 Then run `npm run dev` and open <http://localhost:3000/markets>. `npm test`
 runs the discovery helpers' unit tests (`src/lib/discovery/logic.test.ts`).
 
+## Vendor applications (Django-backed)
+
+The second set of screens backed by Django (Phase 10). They don't use Prisma
+or the legacy Auth.js session.
+
+| Route | For |
+| --- | --- |
+| `/account/login`, `/account/register`, `/verify-email` | Django account sign-in, sign-up, and the email confirmation link. The Django session is separate from the legacy `/login` (Auth.js), and neither trusts the other. |
+| `/markets/[marketId]` | Each date shows **Apply as a vendor** while its applications are open, or when they open. |
+| `/markets/[marketId]/dates/[occurrenceId]/apply` | The application form. You pick which of your businesses applies; only a business owner can apply. Shows closed, not-open-yet, already-applied, restricted and changed-questions states. |
+| `/vendor/businesses/new` | A minimal form to create your own vendor business, used when you have none. It isn't linked to any organizer. |
+| `/vendor/applications`, `/vendor/businesses/[id]/applications/[id]` | Your businesses' applications and their status, answers and organizer message. Owners can withdraw a submitted application. |
+| `/organizer`, `/organizer/[orgId]/applications[/id]` | Organizer list, filterable by status, and the review page. Owners and admins approve or decline with an optional message; staff can view. |
+
+**How it talks to Django:**
+- Client components call `/api/v1/...` on this origin with `credentials: "same-origin"` (`src/lib/django/client.ts`).
+- The CSRF token comes from `/api/v1/auth/csrf` and is kept in memory only. It's refreshed after login and logout, and once more on a `csrf_failed` response.
+- All authorization is decided by Django; the pages only reflect it.
+- Submit buttons disable while a request is in flight, and the server also rejects duplicates.
+- Approval is shown as being accepted for a date, never as a stall reservation or a completed booking.
+
+**Try it locally:** run `uv run python manage.py seed_demo_applications` in
+`backend/` (DEBUG only). Sign in at `/account/login` as `demo-vendor@example.com`
+to apply, or as `demo-organizer@example.com` to review. Both use the password
+in `seed_demo_markets`. New accounts get their confirmation link in the Django
+runserver console during development.
+
+**Not built yet:** password reset and change screens, and an organizer screen
+for intake settings. Organizers configure intake through the API for now.
+
 ## Hard requirements, and where they're enforced
 
 | Requirement | Where |
