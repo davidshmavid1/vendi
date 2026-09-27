@@ -9,7 +9,8 @@ conventions new models follow, how to work with migrations, and the
 > `organizations` models (Organization, OrganizationMembership,
 > OrganizationInvitation, OrganizationAuditEvent), the `vendors` models
 > (VendorBusiness, VendorMembership, VendorInvitation), the `moderation`
-> model (OrganizationRestriction), plus Django's session and
+> model (OrganizationRestriction), the `markets` models (Market,
+> EventOccurrence, RecurrenceSeries), plus Django's session and
 > cache tables. Everything else
 > under [Proposed data model](#proposed-data-model) is a design proposal. None
 > of those tables exist yet.
@@ -120,6 +121,7 @@ Current state:
 | `organizations.0001_initial` | Organization, OrganizationMembership (unique per user; partial unique index `organizations_membership_one_owner` = at most one OWNER), OrganizationInvitation (unique token digest; partial unique index for one PENDING invite per email; role ≠ OWNER; normalized email), OrganizationAuditEvent | Reversible on an empty database. Rolling back drops the tables **and their data**. |
 
 | `vendors.0001_initial` | VendorBusiness (CHECKs: non-blank name, valid category, normalized contact email), VendorMembership (unique per user; partial unique index `vendors_membership_one_owner`), VendorInvitation (unique token digest; one PENDING per email) | Additive. Reversible on an empty database; rolling back drops the tables **and their data**. |
+| `markets.0001_initial` | Market (CHECKs: name, type, status, coordinates both-or-neither within bounds, country format, published ⇒ venue filled), RecurrenceSeries (unique definition per market; interval 1–12; date and time order), EventOccurrence (CHECK `ends_at > starts_at`; unique (market, starts_at); unique (series, series_slot_start); cancelled_at set iff CANCELLED; index (market, ends_at)) | Additive. Reversible on an empty database; rolling back drops the tables **and their data**. |
 | `moderation.0001_initial` | OrganizationRestriction (CHECKs: exactly one of account/vendor_business, non-blank reason, revocation fields set together, `expires_at > created_at`; indexes on (organization, account) and (organization, vendor_business)) | Additive. Reversible on an empty database; rolling back drops the table **and its history**. |
 
 Foreign keys to users and organizations from these tables are `PROTECT`:
@@ -257,8 +259,8 @@ AuditEvent (→ Organization, actor User)
 | **OrganizationMembership** ✅ implemented | Organization | (user, organization, role OWNER/ADMIN/STAFF). Unique per pair. Authorization comes from here. |
 | **VendorBusiness** ✅ implemented | Global | Reusable vendor identity and profile (name, category, contact). Not owned by any organization. |
 | **VendorBusinessMembership** ✅ implemented as `VendorMembership` (OWNER/MEMBER) | Business | People who may act for the business. |
-| **Market** | Organization; **public** listing fields | A recurring market or one-time popup. IANA timezone, location, public description. |
-| **EventOccurrence** | Organization; public date/time | One specific date and its local hours. Generated from a schedule or created directly. |
+| **Market** ✅ implemented | Organization; **public** listing fields | A recurring market or one-time popup. IANA timezone, location, public description. |
+| **EventOccurrence** ✅ implemented (+ `RecurrenceSeries`) | Organization; public date/time | One specific date and its local hours. Generated from a schedule or created directly. |
 | **ApplicationFormVersion** | Organization | Immutable set of questions. New edits create a new version. |
 | **Application** | Organization (private) | A vendor business's submission and review state. Stores the form version and a **snapshot** of profile data and answers at submission, so later profile edits don't rewrite history. |
 | **LayoutVersion / Stall** | Organization | The physical map definition: stall labels, sizes, positions. Versioned so past bookings keep their layout. |
