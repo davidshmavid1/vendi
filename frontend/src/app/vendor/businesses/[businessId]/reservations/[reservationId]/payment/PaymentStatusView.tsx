@@ -4,13 +4,14 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Card } from "@/components/ui";
 import { FeeBreakdown } from "@/components/payments/FeeBreakdown";
+import { CancelBookingPanel } from "@/components/payments/CancelBookingPanel";
 import { AccountGate, buttonClass, DjangoPage, Notice, secondaryButtonClass } from "@/components/DjangoPage";
 import { apiGet, apiSend, type ApiError, type ApiResult } from "@/lib/django/client";
 import { useAccount } from "@/lib/django/useAccount";
 import { formatDateTime } from "@/lib/applications/logic";
 import { formatMinor } from "@/lib/layouts/money";
-import { isCheckoutUrl, isSettling, pollDelayMs } from "@/lib/payments/logic";
-import type { PaymentStatus } from "@/lib/payments/types";
+import { isCheckoutUrl, isSettling, pollDelayMs, refundStatusText } from "@/lib/payments/logic";
+import type { Booking, PaymentStatus } from "@/lib/payments/types";
 
 type Props = { businessId: number; reservationId: number; returned: boolean; cancelled: boolean };
 
@@ -169,7 +170,39 @@ export function PaymentStatusView({ businessId, reservationId, returned, cancell
                           }`
                         : "Free"}
                     </dd>
+                    <dt className="text-zinc-500">Booking</dt>
+                    <dd>{booking.status === "CANCELLED" ? `Cancelled ${cancelledBy(booking)}` : "Confirmed"}</dd>
+                    {booking.cancellation?.reason && (
+                      <>
+                        <dt className="text-zinc-500">Reason</dt>
+                        <dd>{booking.cancellation.reason}</dd>
+                      </>
+                    )}
+                    {booking.refund && (
+                      <>
+                        <dt className="text-zinc-500">Refund</dt>
+                        <dd>
+                          {formatMinor(booking.refund.amount_minor, booking.currency, booking.currency_exponent)}:{" "}
+                          {refundStatusText(booking.refund.status)}
+                        </dd>
+                      </>
+                    )}
+                    {booking.status === "CONFIRMED" && (
+                      <>
+                        <dt className="text-zinc-500">Cancellation</dt>
+                        <dd>{termsText(booking)}</dd>
+                      </>
+                    )}
                   </dl>
+                  {booking.status === "CONFIRMED" && (
+                    <div className="mt-4">
+                      <CancelBookingPanel
+                        base={`/vendors/${businessId}/bookings/${booking.id}`}
+                        timezone={booking.occurrence.timezone}
+                        onCancelled={() => void load()}
+                      />
+                    </div>
+                  )}
                 </Card>
               )}
 
@@ -205,6 +238,25 @@ export function PaymentStatusView({ businessId, reservationId, returned, cancell
   );
 }
 
+function cancelledBy(booking: Booking): string {
+  switch (booking.cancellation?.kind) {
+    case "VENDOR":
+      return "by your business";
+    case "ORGANIZER":
+      return "by the organizer";
+    case "EVENT":
+      return "because the date was cancelled";
+    default:
+      return "";
+  }
+}
+
+function termsText(booking: Booking): string {
+  if (!booking.terms.captured) return "Contact the organizer to cancel this booking.";
+  if (!booking.terms.vendor_deadline) return "This market doesn't allow online cancellation; contact the organizer.";
+  return `You can cancel until ${formatDateTime(booking.terms.vendor_deadline, booking.occurrence.timezone)} for a refund of what you paid minus Vendi's service fee.`;
+}
+
 function StateText({
   status,
   returned,
@@ -219,6 +271,8 @@ function StateText({
   switch (status.state) {
     case "BOOKED":
       return <p className="text-green-700 dark:text-green-400">Your stall is booked.</p>;
+    case "CANCELLED":
+      return <p>This booking is cancelled. The stall has been released.</p>;
     case "PROCESSING":
       return stalled ? (
         <p>

@@ -26,3 +26,18 @@ export function isCheckoutUrl(url: string | null | undefined): url is string {
     return false;
   }
 }
+
+/** Plain-language refund status. Never promises a bank settlement date. */
+export function refundStatusText(status: string): string {
+  switch (status) {
+    case "SUCCEEDED":
+      return "Refunded. Your bank may take several days to show it.";
+    case "REQUESTED":
+    case "PENDING":
+      return "Refund in progress.";
+    case "REVIEW":
+      return "Refund under review by Vendi support.";
+    default:
+      return "The refund couldn't be completed automatically; Vendi support is handling it.";
+  }
+}

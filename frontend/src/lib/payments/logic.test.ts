@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isCheckoutUrl, isSettling, MAX_POLLS, pollDelayMs } from "./logic.ts";
+import { isCheckoutUrl, isSettling, MAX_POLLS, pollDelayMs, refundStatusText } from "./logic.ts";
 
 test("polling is bounded", () => {
   assert.equal(pollDelayMs(0), 2_000);
@@ -23,4 +23,11 @@ test("only Stripe-hosted checkout links are followed", () => {
   assert.equal(isCheckoutUrl("http://checkout.stripe.com/c/pay"), false);
   assert.equal(isCheckoutUrl("https://evil.example/checkout.stripe.com"), false);
   assert.equal(isCheckoutUrl(null), false);
+});
+
+test("refund states read plainly and never promise a date", () => {
+  assert.match(refundStatusText("PENDING"), /in progress/);
+  assert.match(refundStatusText("REVIEW"), /review/);
+  assert.match(refundStatusText("FAILED"), /support/);
+  assert.doesNotMatch(refundStatusText("SUCCEEDED"), /\d/);
 });
