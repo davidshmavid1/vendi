@@ -82,6 +82,15 @@ class Market(models.Model):
                 name="markets_market_published_has_venue",
             ),
         ]
+        indexes = [
+            # Discovery's bounding-box prefilter (map areas and nearby
+            # searches) only ever looks at published markets.
+            models.Index(
+                fields=["latitude", "longitude"],
+                condition=Q(status="PUBLISHED"),
+                name="markets_published_coords_idx",
+            ),
+        ]
 
     def __str__(self):
         return self.name
