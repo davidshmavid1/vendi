@@ -261,6 +261,23 @@ runserver console during development.
 **Not built yet:** password reset and change screens, and an organizer screen
 for intake settings. Organizers configure intake through the API for now.
 
+## Stall layouts (Django-backed)
+
+Phase 11 adds per-date stall layouts.
+
+- **Organizer editor:** `/organizer` → **Stall layouts** → market → date → `/organizer/[orgId]/markets/[marketId]/dates/[occurrenceId]/layout`.
+  - Set the canvas size and currency, add rectangular stalls, then drag them or move them with the arrow keys (Shift = 10 units).
+  - Every value can be typed in the stall panel: label, description, position, size, real size and unit, price, and offered/disabled. None of it needs a pointer.
+  - Problems (overlaps, off-canvas stalls, duplicate labels, bad prices) show immediately and block saving; the server validates everything again.
+  - Saving sends the revision you loaded. If someone else saved first, you get a message and a **Load the latest version** option, which asks before discarding your edits.
+  - Unsaved changes are flagged, and discarding or leaving asks first.
+  - Publish makes the layout visible to vendors. A published layout is read-only until you unpublish it.
+- **Public view:** `/markets/[marketId]/dates/[occurrenceId]` (linked as "Date details and stalls") shows:
+  - the published plan, a stall detail panel ("View stall details"), and an equivalent table for keyboard and screen-reader users;
+  - disabled stalls as "Not offered", with a note that prices exclude taxes or fees and listed stalls aren't reserved;
+  - no Reserve or Pay actions yet.
+- **Money:** prices are integer minor units from the API, formatted with the layout's `currency_exponent` (`src/lib/layouts/money.ts`), for example `$25.00` or `¥2,500`. Typed prices are parsed with string arithmetic, never floats.
+
 ## Hard requirements, and where they're enforced
 
 | Requirement | Where |

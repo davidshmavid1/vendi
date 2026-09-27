@@ -23,6 +23,7 @@ INSTALLED_APPS = [
     "moderation",
     "markets",
     "applications",
+    "layouts",
 ]
 
 MIDDLEWARE = [

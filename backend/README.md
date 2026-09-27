@@ -743,6 +743,92 @@ dates per demo market, and creates `demo-vendor@example.com` with a business.
 Both demo accounts use the password in `seed_demo_markets`. It needs `DEBUG`;
 **never run it against production.**
 
+## Stall layouts and pricing
+
+Each event date (`EventOccurrence`) can have one `StallLayout`: a flat plan of
+rectangular stalls with a price per stall (`layouts/`). The layout **defines
+sellable spaces only**. There's no availability, hold, booking or payment
+state, and a listed stall isn't a promise it can be booked later.
+
+**Geometry:**
+- `canvas_width` × `canvas_height` are logical canvas units (integers 1–10000), independent of screen size.
+- Each stall is `x`, `y`, `width`, `height` in those units, from the top-left.
+- A stall must lie fully inside the canvas; two stalls may share an edge or corner but must not overlap.
+- Real-world size is separate and optional: `physical_width`, `physical_depth` and `physical_unit` (`FT` or `M`) are set together, positive, with up to 2 decimals.
+- No polygons, images, CAD features or templates.
+
+**Stalls:**
+- A stable `id` that is kept across saves.
+- A `label`, unique per layout case-insensitively (a DB unique index on `lower(label)`); max 40 characters, no control or invisible characters.
+- An optional `description` (≤500 characters) and `enabled`.
+- `price_minor`.
+
+Stalls are never deleted: disable one to stop offering it.
+
+**Money:**
+- Integer **minor units** of the layout's single `currency` (ISO 4217), never floats. This matches the legacy `Space.price` in cents.
+- Supported currencies (`layouts/money.py`): USD, CAD, MXN, EUR, GBP, AUD, NZD (2 decimals), JPY, KRW (0 decimals).
+- Responses include `currency_exponent`, so clients format `2500` as `$25.00` or `¥2,500` without assuming two decimal places.
+- `0 ≤ price_minor ≤ 1,000,000,000`.
+- Prices are listed prices only: no taxes, fees or totals.
+
+**Permissions:** organization OWNER and ADMIN create, edit, publish and
+unpublish; STAFF can read. Other accounts get 404. Layouts and stalls are
+reached only through `organizations/{org}/markets/{market}/occurrences/{occ}`,
+and stall ids from another layout are rejected, so nothing can be moved to
+another occurrence or organization.
+
+**Saving (revisions):** `PUT …/layout` replaces the whole layout atomically.
+- Send `expected_revision`: `null` to create, otherwise the revision you loaded. Each save increments `revision`, and a mismatch returns `409 stale_revision` with `details: [{"current_revision": n}]`, so concurrent editors can't silently overwrite each other.
+- The whole payload is validated before anything is written, and one transaction locks the date, then the layout row. An invalid stall means nothing is saved: `400 layout_invalid`, where each detail has `index`, `stall_id`, `field` and `message`.
+- Include every existing stall by `id`, and omit `id` for new ones. A missing, unknown or duplicated id returns `400 stall_mismatch`.
+
+**Publication:**
+- New and unpublished layouts are organizer-only.
+- `POST …/layout/publish` with `{"expected_revision": n}` needs:
+  - a scheduled date that hasn't ended (`409 occurrence_unavailable`);
+  - a market that isn't archived;
+  - at least one enabled stall (`400 layout_empty`).
+- Publishing again is a no-op.
+- A published layout must be **unpublished** (`POST …/layout/unpublish`) before it can be edited (`409 layout_published`).
+- There's no draft/live versioning.
+
+**Public read:** `GET /api/v1/public/occurrences/{id}/layout` returns only a
+published layout of a published market's scheduled date that hasn't ended.
+Otherwise it's a 404, including for cancelled and past dates. The public
+schema has no revision, actors or timestamps. Disabled stalls are included
+with `"offered": false` so the plan stays complete.
+
+**API examples:**
+
+```bash
+# Create (organizer session + CSRF header)
+curl -X PUT "$API/organizations/1/markets/1/occurrences/7/layout" -b cookies -H "X-CSRFToken: $CSRF" \
+  -H "Content-Type: application/json" -d '{
+    "expected_revision": null, "canvas_width": 100, "canvas_height": 60, "currency": "USD",
+    "stalls": [
+      {"label": "A1", "x": 0, "y": 0, "width": 10, "height": 10, "price_minor": 2500,
+       "physical_width": "10", "physical_depth": "10", "physical_unit": "FT"},
+      {"label": "A2", "x": 10, "y": 0, "width": 10, "height": 10, "price_minor": 2500}
+    ]}'
+# -> 200 {"id": 3, "revision": 1, "published": false, "currency_exponent": 2, "stalls": [{"id": 11, ...}, {"id": 12, ...}]}
+
+# Edit: send every stall with its id, plus the revision you loaded
+curl -X PUT ".../layout" ... -d '{"expected_revision": 1, ..., "stalls": [{"id": 11, ...}, {"id": 12, "enabled": false, ...}]}'
+
+# Publish, then read publicly
+curl -X POST ".../layout/publish" ... -d '{"expected_revision": 2}'
+curl "$API/public/occurrences/7/layout"
+# -> {"currency": "USD", "currency_exponent": 2, "stalls": [{"id": 11, "label": "A1", "offered": true, "price_minor": 2500, ...}]}
+```
+
+**Phase 12 boundary (reservations):**
+- Reference stalls by their stable `Stall.id`, and the date by `EventOccurrence.id`.
+- Read the **authoritative price and currency from the database** at reservation time, never from the client.
+- **Snapshot** the agreed `price_minor` and `currency` on the reservation or booking, so later layout edits don't change what was agreed.
+- Decide then whether editing or unpublishing a layout with active reservations is blocked, and how a disabled stall affects existing reservations. Nothing in this phase references stalls yet, so no booking protection exists here.
+- Application approval doesn't assign a stall; selection and allocation rules are for later phases.
+
 ## Checks and tests
 
 ```bash

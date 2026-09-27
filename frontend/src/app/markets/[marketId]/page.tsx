@@ -117,7 +117,14 @@ export default async function MarketDetailPage({ params }: { params: Promise<{ m
                 {date.status === "CANCELLED" && date.cancellation_message && (
                   <p className="mt-1 text-zinc-600 dark:text-zinc-400">{date.cancellation_message}</p>
                 )}
-                <ApplicationLink marketId={m.id} window={windowFor.get(date.id)} zone={date.timezone} />
+                <div className="flex flex-wrap items-center gap-3">
+                  <ApplicationLink marketId={m.id} window={windowFor.get(date.id)} zone={date.timezone} />
+                  {date.status === "SCHEDULED" && (
+                    <Link href={`/markets/${m.id}/dates/${date.id}`} className="mt-2 inline-block text-xs underline">
+                      Date details and stalls
+                    </Link>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
