@@ -925,7 +925,13 @@ browser returning from Stripe is never proof of payment.
 
 **Funds flow:**
 - This reuses the model already approved and test-verified for the legacy app (`frontend/README.md`): Stripe Connect **destination charges**. The Checkout Session and its PaymentIntent live on Vendi's platform account.
-- `payment_intent_data.transfer_data.destination` is the organizer's connected account, and `application_fee_amount` is the platform's cut: `price × application_fee_bps / 10000`, rounded down, default 100 bps = 1%, per organization, as the legacy `Organization.applicationFeeBps`.
+- **Vendi's fee is added on top of the stall price.** The vendor pays `price + fee`; the organizer receives the full stall price; Vendi keeps the fee.
+  - `fee = price × application_fee_bps / 10000`, rounded down to the minor unit (default 100 bps = 1%, per organization). A $25.00 stall has a $0.25 fee, so the vendor pays $25.25.
+  - Checkout shows two lines, the stall and "Vendi service fee". The status API returns a `quote` (stall, fee, total) while the stall is held, and each payment's `stall_price_minor`, `fee_minor` and total `amount_minor`.
+  - `payment_intent_data.transfer_data.destination` is the organizer's connected account and `application_fee_amount` is the fee. Stripe transfers the whole charge to the organizer and then collects the fee back to the platform, so the organizer nets exactly the stall price.
+  - Stripe's processing fee is taken from the platform's balance with destination charges; it is not passed on to organizers or vendors.
+  - Attempts created before this change (`fee_on_top = false`) charged the stall price with the fee taken out of it. They keep their original amounts and Stripe parameters, so pending retries stay identical.
+  - The legacy Next.js payment code still takes the fee out of the price; it is unchanged.
 - Compensating refunds use `reverse_transfer` and `refund_application_fee`, so the organizer and the platform both give back their share.
 - **Linking accounts:** a Django organization is linked to its connected account by an operator. There is no self-serve Connect onboarding in the Django app yet:
 
@@ -939,7 +945,7 @@ browser returning from Stripe is never proof of payment.
 
 | Model | Holds |
 | --- | --- |
-| `PaymentAccount` | Organization → Stripe connected account, `livemode`, `charges_enabled`, `application_fee_bps`. |
+| `PaymentAccount` | Organization → Stripe connected account, `livemode`, `charges_enabled`, `application_fee_bps` (Vendi's fee rate, added on top of stall prices). |
 | `PaymentAttempt` | One Checkout Session for one reservation. Snapshot of amount, currency, fee and destination; its own `idempotency_key`; `checkout_session_id` and `payment_intent_id`, each unique per `livemode`. **`status`** is the payment: CREATING → OPEN → SUCCEEDED, or EXPIRED, CANCELED, FAILED. A separate **`fulfillment`** (FULFILLED/UNFULFILLED) says whether a paid attempt got its stall. `provider_calls`, `last_error` and `last_synced_at` support recovery. |
 | `Refund` | Compensating refund of an UNFULFILLED payment: REQUESTED → PENDING → SUCCEEDED, or FAILED/CANCELED (operator). |
 | `StripeEvent` | One row per webhook event id (unique), with `processed_at`, `attempts` and `last_error`. |

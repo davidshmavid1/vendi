@@ -223,9 +223,12 @@ def _prepare_attempt(actor: User, reservation_id: int) -> PaymentAttempt:
         started_by=actor,
         livemode=account.livemode,
         destination_account_id=account.stripe_account_id,
-        amount_minor=reservation.price_minor,
+        # Vendi's fee is added on top of the stall price: the vendor pays
+        # both, the organizer receives the full stall price.
+        amount_minor=reservation.price_minor + account.fee_for(reservation.price_minor),
         currency=reservation.currency,
         application_fee_minor=account.fee_for(reservation.price_minor),
+        fee_on_top=True,
         description=(
             f"Stall {reservation.offer.stall.label} · {occurrence.market.name} · "
             f"{occurrence.starts_at:%Y-%m-%d}"
@@ -247,6 +250,25 @@ def _return_url(attempt: PaymentAttempt, outcome: str) -> str:
     )
 
 
+def _line_items(attempt: PaymentAttempt) -> list[dict]:
+    def item(name: str, amount: int) -> dict:
+        return {
+            "quantity": 1,
+            "price_data": {
+                "currency": attempt.currency.lower(),
+                "unit_amount": amount,
+                "product_data": {"name": name},
+            },
+        }
+
+    if not attempt.fee_on_top:  # attempts from before the fee-on-top change
+        return [item(attempt.description, attempt.amount_minor)]
+    items = [item(attempt.description, attempt.stall_price_minor)]
+    if attempt.application_fee_minor:
+        items.append(item("Vendi service fee", attempt.application_fee_minor))
+    return items
+
+
 def session_params(attempt: PaymentAttempt) -> dict:
     """Checkout parameters, derived only from the attempt's stored fields so a
     retry with the same idempotency key sends identical parameters."""
@@ -262,16 +284,7 @@ def session_params(attempt: PaymentAttempt) -> dict:
         # Dashboard. Delayed ones (bank debits) complete the session unpaid
         # and settle later; sync_attempt keeps the stall held meanwhile.
         "integration_identifier": CHECKOUT_INTEGRATION_ID,
-        "line_items": [
-            {
-                "quantity": 1,
-                "price_data": {
-                    "currency": attempt.currency.lower(),
-                    "unit_amount": attempt.amount_minor,
-                    "product_data": {"name": attempt.description},
-                },
-            }
-        ],
+        "line_items": _line_items(attempt),
         "payment_intent_data": intent_data,
         "client_reference_id": str(attempt.pk),
         "metadata": {
@@ -674,6 +687,25 @@ def payment_state(actor: User, business_id: int, reservation_id: int) -> Payment
     refund = attempt.refunds.order_by("-pk").first() if attempt else None
     booking = Booking.objects.filter(reservation=reservation).first()
     return PaymentState(reservation, attempt, booking, refund)
+
+
+def checkout_quote(reservation: Reservation) -> dict | None:
+    """The amounts checkout would charge now (for display before paying).
+    The attempt created at checkout records the authoritative amounts."""
+    if reservation.price_minor == 0:
+        return None
+    account = PaymentAccount.objects.filter(
+        organization_id=reservation.occurrence.market.organization_id, charges_enabled=True
+    ).first()
+    if account is None:
+        return None
+    fee = account.fee_for(reservation.price_minor)
+    return {
+        "stall_price_minor": reservation.price_minor,
+        "fee_minor": fee,
+        "total_minor": reservation.price_minor + fee,
+        "currency": reservation.currency,
+    }
 
 
 # --- Webhooks ------------------------------------------------------------------------------

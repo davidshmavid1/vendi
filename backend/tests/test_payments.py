@@ -99,7 +99,12 @@ def test_checkout_uses_the_reservation_snapshot_and_the_approved_funds_flow(paid
     assert body["payment"]["checkout_url"].startswith("https://checkout.stripe.test/")
     session = paid.stripe.only_session()
     params = paid.stripe.session_params[session.id]
-    assert params["line_items"][0]["price_data"]["unit_amount"] == 2500  # snapshot, not 9999
+    # The stall price (snapshot, not 9999) plus Vendi's 1% fee on top.
+    lines = [
+        (li["price_data"]["product_data"]["name"], li["price_data"]["unit_amount"])
+        for li in params["line_items"]
+    ]
+    assert lines[0][1] == 2500 and lines[1] == ("Vendi service fee", 25)
     assert params["line_items"][0]["price_data"]["currency"] == "usd"
     # Dynamic payment methods: no allowlist; Dashboard settings decide.
     assert "payment_method_types" not in params
@@ -110,7 +115,12 @@ def test_checkout_uses_the_reservation_snapshot_and_the_approved_funds_flow(paid
     assert params["success_url"].startswith("http://frontend.test/vendor/businesses/")
     assert params["cancel_url"].endswith("?checkout=cancelled")
     attempt = _attempt(reservation)
-    assert (attempt.amount_minor, attempt.currency, attempt.status) == (2500, "USD", "OPEN")
+    assert (attempt.amount_minor, attempt.application_fee_minor, attempt.status) == (
+        2525,
+        25,
+        "OPEN",
+    )
+    assert body["payment"]["stall_price_minor"] == 2500 and body["payment"]["fee_minor"] == 25
     assert attempt.checkout_session_id == session.id
 
 
@@ -366,7 +376,7 @@ def test_event_payload_is_never_trusted(paid, api):
         {"amount_received": 100},
         {"currency": "EUR"},
         {"destination": "acct_someone_else"},
-        {"application_fee_amount": 2500},
+        {"application_fee_amount": 2525},
         {"livemode": True},
     ],
 )
@@ -381,7 +391,8 @@ def test_payment_that_does_not_match_the_attempt_is_refunded_not_booked(paid, ap
     assert attempt.last_error.startswith("verification_failed")
     assert Booking.objects.count() == 0
     refund = Refund.objects.get()
-    assert (refund.amount_minor, refund.status) == (2500, RefundStatus.PENDING)
+    # Never booked: everything paid, fee included, goes back.
+    assert (refund.amount_minor, refund.status) == (2525, RefundStatus.PENDING)
     assert Reservation.objects.get(pk=reservation.pk).status == ReservationStatus.EXPIRED
 
 
@@ -530,7 +541,7 @@ def test_payment_after_eligibility_was_lost_is_refunded(paid, api):
     )
     assert Reservation.objects.get(pk=reservation.pk).status == ReservationStatus.EXPIRED
     refund = Refund.objects.get()
-    assert paid.stripe.refunds[refund.stripe_refund_id].amount == 2500
+    assert paid.stripe.refunds[refund.stripe_refund_id].amount == 2525
 
 
 def test_cancel_checkout_expires_the_session_then_releases(paid):
@@ -804,3 +815,28 @@ def test_reconcile_rechecks_linked_accounts(paid):
     with at(later + services.ACCOUNT_RECHECK_AFTER * 2):
         services.reconcile()
     assert PaymentAccount.objects.get().charges_enabled is True
+
+
+def test_holding_shows_the_fee_added_on_top_before_checkout(paid):
+    reservation = _hold(paid)
+    quote = _state(paid, reservation)["quote"]
+    assert (quote["stall_price_minor"], quote["fee_minor"], quote["total_minor"]) == (
+        2500,
+        25,
+        2525,
+    )
+    PaymentAccount.objects.update(charges_enabled=False)
+    assert _state(paid, reservation)["quote"] is None
+
+
+def test_attempts_from_before_the_fee_change_keep_their_parameters(paid):
+    """A CREATING attempt saved before the change must resend exactly what it
+    sent then (one line at the stall price), or its idempotent retry fails."""
+    reservation = _hold(paid)
+    paid.stripe.fail("create_session", "timeout")
+    _checkout(paid, reservation)
+    PaymentAttempt.objects.update(fee_on_top=False, amount_minor=2500)
+    attempt = _attempt(reservation)
+    params = services.session_params(attempt)
+    assert [li["price_data"]["unit_amount"] for li in params["line_items"]] == [2500]
+    assert attempt.stall_price_minor == 2500

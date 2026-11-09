@@ -26,15 +26,27 @@ export type Booking = {
   created_at: string;
 };
 
+export type CheckoutQuote = {
+  stall_price_minor: number;
+  fee_minor: number;
+  total_minor: number;
+  currency: string;
+  currency_exponent: number;
+};
+
 export type PaymentStatus = {
   state: PaymentStateName;
   payment_required: boolean;
+  quote: CheckoutQuote | null;
   reservation: Reservation;
   payment: {
     id: number;
     status: "CREATING" | "OPEN" | "SUCCEEDED" | "EXPIRED" | "CANCELED" | "FAILED";
     fulfillment: "FULFILLED" | "UNFULFILLED" | null;
+    // Total charged = stall price + Vendi's fee (added on top).
     amount_minor: number;
+    stall_price_minor: number;
+    fee_minor: number;
     currency: string;
     currency_exponent: number;
     session_expires_at: string;
