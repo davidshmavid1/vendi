@@ -391,8 +391,10 @@ def test_payment_that_does_not_match_the_attempt_is_refunded_not_booked(paid, ap
     assert attempt.last_error.startswith("verification_failed")
     assert Booking.objects.count() == 0
     refund = Refund.objects.get()
-    # Never booked: everything paid, fee included, goes back.
-    assert (refund.amount_minor, refund.status) == (2525, RefundStatus.PENDING)
+    # Never booked: everything Stripe received, fee included, goes back.
+    received = overrides.get("amount_received", 2525)
+    assert (refund.amount_minor, refund.status) == (received, RefundStatus.PENDING)
+    assert refund.currency == overrides.get("currency", "USD")
     assert Reservation.objects.get(pk=reservation.pk).status == ReservationStatus.EXPIRED
 
 

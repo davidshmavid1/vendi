@@ -60,6 +60,9 @@ def reservation_out(reservation: Reservation) -> dict:
         "released_at": reservation.released_at,
         "confirmed_at": reservation.confirmed_at,
         "payment_pending": reservation.payment_pending,
+        # Cancellation terms offered with this hold (copied onto the booking).
+        "policy_vendor_cutoff_hours": reservation.policy_vendor_cutoff_hours,
+        "policy_captured": reservation.policy_captured_at is not None,
         "server_time": now,
     }
 

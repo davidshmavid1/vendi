@@ -32,6 +32,9 @@ class MarketOut(MarketFields):
 
     id: int
     status: MarketStatusName
+    # Hours before a date starts until which vendors may cancel for a refund;
+    # null: vendors can't cancel on their own.
+    vendor_cancellation_cutoff_hours: int | None
     published_at: datetime | None
     archived_at: datetime | None
     created_at: datetime
@@ -250,3 +253,8 @@ class MapResult(Schema):
     total: int
     truncated: bool
     limit: int
+
+
+class CancellationPolicyIn(InputSchema):
+    # null: vendors can't cancel on their own (they contact the organizer).
+    vendor_cancellation_cutoff_hours: int | None = Field(..., ge=0, le=24 * 365)

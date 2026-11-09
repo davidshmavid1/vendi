@@ -273,6 +273,11 @@ export function StallPicker({ businessId, applicationId }: Props) {
             <p className="text-sm text-zinc-500">Loading…</p>
           ) : !approved ? (
             <Notice tone="amber">You can choose a stall once this application is approved.</Notice>
+          ) : application.occurrence.status === "CANCELLED" ? (
+            <Notice tone="amber">
+              This date was cancelled. Any booking you had is cancelled and refunded (see My applications for its
+              status).
+            </Notice>
           ) : !layout ? (
             <Notice>The organizer hasn&apos;t published stalls for this date yet.</Notice>
           ) : (
@@ -327,6 +332,16 @@ export function StallPicker({ businessId, applicationId }: Props) {
                         exponent={quote.currency_exponent}
                       />
                     </div>
+                  )}
+                  {hold.status === "HELD" && (
+                    <p className="mt-3 text-sm">
+                      <span className="font-medium">Cancellation terms: </span>
+                      {!hold.policy_captured || hold.policy_vendor_cutoff_hours === null
+                        ? "You can't cancel this booking online; contact the organizer."
+                        : `You can cancel until ${hold.policy_vendor_cutoff_hours} hour${
+                            hold.policy_vendor_cutoff_hours === 1 ? "" : "s"
+                          } before the date starts, for a refund of what you paid minus Vendi's service fee. After that, contact the organizer.`}
+                    </p>
                   )}
                   {hold.status === "HELD" && (
                     <p className="mt-3 text-xs text-zinc-500">

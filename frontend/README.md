@@ -323,6 +323,23 @@ Phase 13 turns a held stall into a booking (backend: `backend/README.md` → Pay
 - **Organizer:** market page → a date's **Bookings** → `/organizer/[organizationId]/markets/[marketId]/dates/[occurrenceId]/bookings` lists booked stalls, vendor, price, and paid or free.
 - **Two separate Stripe integrations:** the legacy Next.js payment routes (`/api/webhooks/stripe`, booking and application-fee PaymentIntents) are unchanged. Django's flow has its own webhook endpoint and signing secret.
 
+## Cancellations and refunds (Django-backed)
+
+Phase 14 (backend: `backend/README.md` → Cancellations and refunds).
+
+- **Terms before checkout:** the held stall shows its cancellation terms (the market's cutoff, snapshotted when the stall was held).
+- **Vendors:** the booking page (`…/reservations/[reservationId]/payment`) shows the terms. **Cancel booking…** loads a server-computed preview through `src/components/payments/CancelBookingPanel.tsx`:
+  - it shows the refund (paid minus Vendi's fee), that the stall is released, and the deadline;
+  - it requires ticking an explicit confirmation;
+  - it echoes the previewed amount, and if the server reports the terms changed, the panel reloads them.
+  - Members see the terms but can't cancel.
+- **Booking and refund status are shown separately:** "Cancelled by …" and "Refund in progress / Refunded / under review". No exact bank settlement date is promised.
+- **Organizers:**
+  - The market page has a **Vendor cancellations** cutoff setting (empty: vendors can't cancel online).
+  - A date's **Bookings** page shows each booking's status and refund, lets owners and admins cancel a booking (a reason for the vendor is required; the internal note is private), and has **Cancel this date…**, a message to vendors plus confirmation.
+  - Once a date is cancelled, the page shows whether cleanup is still pending and offers **Retry now**.
+- **Cancelled dates:** the stall page says the date was cancelled instead of offering stalls.
+
 ## Hard requirements, and where they're enforced
 
 | Requirement | Where |

@@ -19,6 +19,8 @@ export type Reservation = {
   confirmed_at: string | null;
   // A checkout is open or its outcome isn't known yet: the stall stays held.
   payment_pending: boolean;
+  policy_vendor_cutoff_hours: number | null;
+  policy_captured: boolean;
   server_time: string;
 };
 

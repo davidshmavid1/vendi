@@ -12,6 +12,7 @@ from core.schemas import ErrorOut
 from markets import discovery, public, recurrence, services
 from markets.models import EventOccurrence, MarketStatus
 from markets.schemas import (
+    CancellationPolicyIn,
     DiscoveryPage,
     MapResult,
     MarketCreateIn,
@@ -117,6 +118,23 @@ def get_market(request, organization_id: int, market_id: int):
 def update_market(request, organization_id: int, market_id: int, payload: MarketUpdateIn):
     changes = payload.dict(exclude_unset=True)
     return services.update_market(request.auth, organization_id, market_id, **changes)
+
+
+@router.put(
+    _BASE + "/{market_id}/cancellation-policy",
+    response={200: MarketOut, 422: ErrorOut, **_ERRORS},
+)
+def set_cancellation_policy(
+    request, organization_id: int, market_id: int, payload: CancellationPolicyIn
+):
+    """Vendor cancellation cutoff for new holds. Existing holds and bookings
+    keep the terms they were offered."""
+    return services.set_cancellation_policy(
+        request.auth,
+        organization_id,
+        market_id,
+        vendor_cutoff_hours=payload.vendor_cancellation_cutoff_hours,
+    )
 
 
 @router.post(_BASE + "/{market_id}/publish", response={200: MarketOut, **_ERRORS})

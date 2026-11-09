@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -53,7 +53,9 @@ from payments.gateway import (
     payments_unavailable,
 )
 from payments.models import (
+    COUNTED_REFUND,
     LIVE_ATTEMPT,
+    NEEDS_OPERATOR,
     UNRESOLVED_ATTEMPT,
     UNRESOLVED_REFUND,
     AttemptStatus,
@@ -470,13 +472,16 @@ def _record_paid(attempt_id: int, intent: IntentSnapshot, problem: str | None) -
         attempt.save()
         if reservation.payment_pending and was_unresolved:
             reservations.clear_payment_pending(reservation, now, end_hold=True)
-        Refund.objects.create(
-            attempt=attempt,
-            reason=RefundReason.UNFULFILLED,
-            amount_minor=attempt.amount_minor,
-            currency=attempt.currency,
-            idempotency_key=f"vendi-refund-{uuid.uuid4().hex}",
-        )
+        # Refund exactly what Stripe received (it may differ from the attempt
+        # when verification failed), in the charge's currency.
+        if intent.amount_received > 0:
+            Refund.objects.create(
+                attempt=attempt,
+                reason=RefundReason.UNFULFILLED,
+                amount_minor=intent.amount_received,
+                currency=intent.currency or attempt.currency,
+                idempotency_key=f"vendi-refund-{uuid.uuid4().hex}",
+            )
         logger.error(
             "payment unfulfilled attempt=%s reservation=%s reason=%s",
             attempt.pk,
@@ -516,15 +521,59 @@ def _create_booking(reservation: Reservation, attempt: PaymentAttempt | None, no
         payment_required=attempt is not None,
         payment_attempt=attempt,
         created_at=now,
+        # The cancellation terms the stall was offered under (Phase 14).
+        policy_captured_at=reservation.policy_captured_at,
+        policy_vendor_cutoff_hours=reservation.policy_vendor_cutoff_hours,
     )
 
 
 # --- Compensating refunds -----------------------------------------------------------------
 
 
+def request_cancellation_refund(attempt_id: int, amount_minor: int) -> Refund:
+    """Trusted, inside the cancellation's transaction: record the intent to
+    refund ``amount_minor`` of this payment (Stripe is called afterwards by
+    ``process_refund``). The attempt row is locked, so concurrent refunds
+    can't add up to more than was paid. If an earlier refund (for example
+    one made in the Stripe Dashboard) already took money back, or the amount
+    doesn't fit, the refund is recorded as REVIEW for an operator instead of
+    guessing."""
+    attempt = PaymentAttempt.objects.select_for_update().get(pk=attempt_id)
+    counted = [r for r in attempt.refunds.all() if r.status in COUNTED_REFUND]
+    remaining = attempt.amount_minor - sum(r.amount_minor for r in counted)
+    status, note = RefundStatus.REQUESTED, ""
+    if any(r.reason == RefundReason.EXTERNAL for r in counted):
+        status, note = RefundStatus.REVIEW, "refunded_externally"
+    elif amount_minor > remaining:
+        status, note = RefundStatus.REVIEW, "exceeds_refundable"
+    return Refund.objects.create(
+        attempt=attempt,
+        reason=RefundReason.CANCELLATION,
+        amount_minor=amount_minor,
+        currency=attempt.currency,
+        idempotency_key=f"vendi-refund-{uuid.uuid4().hex}",
+        refund_application_fee=False,
+        status=status,
+        last_error=note,
+    )
+
+
+# Stripe refusals that mean "look at this payment", not "try again".
+_REVIEW_CODES = ("stripe_charge_disputed", "stripe_charge_already_refunded")
+
+
+def _mark_review(refund: Refund, note: str) -> Refund:
+    Refund.objects.filter(pk=refund.pk, status=RefundStatus.REQUESTED).update(
+        status=RefundStatus.REVIEW, last_error=note[:100], updated_at=timezone.now()
+    )
+    logger.error("refund refund=%s needs review: %s", refund.pk, note)
+    return Refund.objects.get(pk=refund.pk)
+
+
 def process_refund(refund_id: int) -> Refund:
-    """Create (or check on) a compensating refund at Stripe. No locks are
-    held during the call; the idempotency key makes retries safe."""
+    """Create (or check on) a refund at Stripe. No locks are held during the
+    call; the idempotency key makes retries safe, and a refund is SUCCEEDED
+    only when Stripe says so (accepted is PENDING)."""
     refund = Refund.objects.select_related("attempt").get(pk=refund_id)
     if refund.status not in UNRESOLVED_REFUND:
         return refund
@@ -532,13 +581,26 @@ def process_refund(refund_id: int) -> Refund:
         if refund.stripe_refund_id:
             snapshot = gateway().retrieve_refund(refund.stripe_refund_id)
         else:
+            if refund.reason == RefundReason.CANCELLATION and refund.provider_calls == 0:
+                # Before the first send only: afterwards our own (possibly
+                # unanswered) refund would look like an external one.
+                problem = _charge_problem(refund)
+                if problem:
+                    return _mark_review(refund, problem)
             snapshot = gateway().create_refund(
                 payment_intent_id=refund.attempt.payment_intent_id,
                 amount=refund.amount_minor,
                 idempotency_key=refund.idempotency_key,
+                refund_application_fee=refund.refund_application_fee,
+                reason="unfulfilled"
+                if refund.reason == RefundReason.UNFULFILLED
+                else "cancellation",
             )
     except ProviderError as error:
         logger.warning("refund refund=%s error=%s", refund.pk, error.code)
+        if error.definitive and error.code in _REVIEW_CODES:
+            Refund.objects.filter(pk=refund.pk).update(provider_calls=refund.provider_calls + 1)
+            return _mark_review(refund, error.code)
         Refund.objects.filter(pk=refund.pk).update(
             provider_calls=refund.provider_calls + 1,
             last_error=error.code,
@@ -548,6 +610,21 @@ def process_refund(refund_id: int) -> Refund:
         )
         return Refund.objects.get(pk=refund.pk)
     return _record_refund(refund.pk, snapshot)
+
+
+def _charge_problem(refund: Refund) -> str | None:
+    """Raises ProviderError when Stripe can't be reached (retried later)."""
+    state = gateway().retrieve_charge_state(refund.attempt.payment_intent_id)
+    if state.disputed:
+        return "disputed"
+    known = sum(
+        r.amount_minor
+        for r in refund.attempt.refunds.exclude(pk=refund.pk)
+        if r.status in (RefundStatus.PENDING, RefundStatus.SUCCEEDED) and r.stripe_refund_id
+    )
+    if state.amount_refunded > known:
+        return "refunded_externally"
+    return None
 
 
 _REFUND_STATES = {
@@ -560,8 +637,22 @@ _REFUND_STATES = {
 def _record_refund(refund_id: int, snapshot: RefundSnapshot) -> Refund:
     with transaction.atomic():
         refund = Refund.objects.select_for_update().get(pk=refund_id)
+        new_status = _REFUND_STATES.get(snapshot.status, RefundStatus.PENDING)
+        if refund.status == RefundStatus.SUCCEEDED and new_status in (
+            RefundStatus.FAILED,
+            RefundStatus.CANCELED,
+        ):
+            # Stripe: a refund can fail after succeeding (the bank returns it,
+            # up to 30 days later). For destination charges the money goes back
+            # to the platform balance, transfer reversal included: an operator
+            # must re-send it (see README -> Cancellations and refunds).
+            refund.status = new_status
+            refund.last_error = f"refund_{snapshot.status}_after_success"
+            refund.save(update_fields=["status", "last_error", "updated_at"])
+            logger.error("refund refund=%s %s after succeeding", refund.pk, snapshot.status)
+            return refund
         if refund.status not in UNRESOLVED_REFUND:
-            return refund  # final states never change
+            return refund  # otherwise final states never change (e.g. back to pending)
         refund.stripe_refund_id = snapshot.id
         refund.provider_calls += 1
         refund.last_error = ""
@@ -573,6 +664,23 @@ def _record_refund(refund_id: int, snapshot: RefundSnapshot) -> Refund:
             logger.error("refund refund=%s ended %s", refund.pk, snapshot.status)
         refund.save()
     return refund
+
+
+def sync_refund(refund_id: int) -> Refund:
+    """Bring a refund up to date with Stripe (refund webhooks). Unlike
+    ``process_refund`` it also re-reads SUCCEEDED refunds, which Stripe can
+    still fail later; it never creates one."""
+    refund = Refund.objects.get(pk=refund_id)
+    if refund.status in UNRESOLVED_REFUND:
+        return process_refund(refund.pk)
+    if refund.status != RefundStatus.SUCCEEDED or not refund.stripe_refund_id:
+        return refund
+    try:
+        snapshot = gateway().retrieve_refund(refund.stripe_refund_id)
+    except ProviderError as error:
+        logger.warning("refund sync refund=%s error=%s", refund.pk, error.code)
+        return refund
+    return _record_refund(refund.pk, snapshot)
 
 
 # --- Vendor operations ---------------------------------------------------------------------
@@ -619,6 +727,44 @@ def cancel_checkout(actor: User, business_id: int, reservation_id: int) -> Reser
             code="checkout_pending",
         )
     return Reservation.objects.get(pk=reservation_id)
+
+
+def settle_checkout_for_cancelled_date(reservation_id: int) -> bool:
+    """Trusted (date cancellation work): end this hold's checkout, if any,
+    without letting it become a booking. Returns True once no payment for it
+    is outstanding. Calls Stripe with no locks held.
+
+    - An open session is expired at Stripe; only when Stripe confirms is the
+      attempt CANCELED and the hold's payment lock cleared.
+    - If the customer paid first, ``sync_attempt`` records it; the date is
+      cancelled, so Phase 13's rule makes it paid-but-unfulfilled and
+      refunds it in full.
+    - A creation with an unknown outcome, or a delayed payment still
+      settling, is left for a later run (returns False).
+    """
+    attempt = (
+        PaymentAttempt.objects.filter(reservation_id=reservation_id, status__in=UNRESOLVED_ATTEMPT)
+        .order_by("-pk")
+        .first()
+    )
+    if attempt is None:
+        return True
+    if attempt.status == AttemptStatus.OPEN and not attempt.payment_intent_id:
+        try:
+            session = gateway().expire_session(attempt.checkout_session_id)
+        except ProviderError as error:
+            if not error.definitive:
+                return False
+            attempt = sync_attempt(attempt.pk)  # completed (or expired) meanwhile
+        else:
+            if session.status == "expired":
+                _close_attempt(attempt.pk, AttemptStatus.CANCELED)
+            else:
+                attempt = sync_attempt(attempt.pk)
+    else:
+        attempt = sync_attempt(attempt.pk)
+    attempt.refresh_from_db()
+    return attempt.status not in UNRESOLVED_ATTEMPT
 
 
 def confirm_free(actor: User, business_id: int, reservation_id: int) -> Booking:
@@ -767,9 +913,9 @@ def process_event(event_pk: int) -> None:
     elif row.type in REFUND_EVENTS:
         refund = Refund.objects.filter(stripe_refund_id=row.object_id).first()
         if refund is None:
-            note = "ignored_unknown_refund"
+            note = _record_external_refund(row) or ""
         else:
-            refund = process_refund(refund.pk)
+            refund = sync_refund(refund.pk)
             if refund.status in UNRESOLVED_REFUND and refund.last_error:
                 _event_failed(row, refund.last_error)
     else:
@@ -777,6 +923,40 @@ def process_event(event_pk: int) -> None:
     StripeEvent.objects.filter(pk=row.pk, processed_at__isnull=True).update(
         processed_at=timezone.now(), attempts=row.attempts + 1, last_error=note
     )
+
+
+def _record_external_refund(row: StripeEvent) -> str | None:
+    """A refund Vendi didn't make (e.g. from the Stripe Dashboard). If it's
+    for one of Vendi's payments, record it so later refunds account for it.
+    It never cancels a booking by itself. Returns a note when ignored."""
+    try:
+        snapshot = gateway().retrieve_refund(row.object_id)
+    except ProviderError as error:
+        if error.definitive:
+            return "ignored_unknown_refund"
+        _event_failed(row, error.code)
+    attempt = PaymentAttempt.objects.filter(
+        livemode=row.livemode, payment_intent_id=snapshot.payment_intent_id or "-"
+    ).first()
+    if attempt is None:
+        return "ignored_unknown_refund"
+    try:
+        with transaction.atomic():
+            Refund.objects.create(
+                attempt=attempt,
+                reason=RefundReason.EXTERNAL,
+                amount_minor=snapshot.amount,
+                currency=attempt.currency,
+                idempotency_key=f"external-{snapshot.id}"[:64],
+                stripe_refund_id=snapshot.id,
+                refund_application_fee=False,
+                status=_REFUND_STATES.get(snapshot.status, RefundStatus.PENDING),
+                completed_at=timezone.now() if snapshot.status == "succeeded" else None,
+            )
+    except IntegrityError:
+        pass  # recorded by a concurrent delivery
+    logger.warning("external refund %s recorded for attempt=%s", snapshot.id, attempt.pk)
+    return None
 
 
 def _event_failed(row: StripeEvent, code: str):
@@ -866,7 +1046,5 @@ def reconcile(limit: int = 100) -> dict:
             attempt_step(lambda a=account: refresh_account(a.pk), "accounts")
 
     counts["expired_holds"] = reservations.expire_holds()
-    counts["needs_operator"] = Refund.objects.filter(
-        status__in=(RefundStatus.FAILED, RefundStatus.CANCELED)
-    ).count()
+    counts["needs_operator"] = Refund.objects.filter(status__in=NEEDS_OPERATOR).count()
     return counts

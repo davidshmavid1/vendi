@@ -19,6 +19,7 @@ from accounts.models import User
 from core.exceptions import Conflict, InvalidRequest, NotFound
 from markets import recurrence
 from markets.models import (
+    MAX_CANCELLATION_CUTOFF_HOURS,
     EventOccurrence,
     Market,
     MarketStatus,
@@ -26,6 +27,7 @@ from markets.models import (
     OccurrenceStatus,
     RecurrenceSeries,
 )
+from markets.signals import occurrence_cancelled
 from organizations.models import Role
 from organizations.permissions import membership_for, require_role
 
@@ -286,11 +288,13 @@ def update_occurrence(
 def cancel_occurrence(
     actor: User, organization_id: int, market_id: int, occurrence_id: int, *, message: str = ""
 ) -> EventOccurrence:
-    """Mark the date cancelled, keeping the record. Nothing else changes: no
-    applications, bookings or payments exist yet, and later phases decide
-    what cancellation means for them."""
+    """Mark the date cancelled, keeping the record. From this moment it
+    accepts no applications, holds, checkouts or bookings (each checks the
+    date's status under its lock). ``occurrence_cancelled`` is sent in the
+    same transaction so bookings can record the cleanup of the date's holds,
+    checkouts and bookings (processed afterwards, in batches)."""
     with transaction.atomic():
-        _manager(actor, organization_id)
+        membership = _manager(actor, organization_id)
         market = _market_in(organization_id, market_id, lock=True)
         _require_not_archived(market)
         occurrence = _occurrence_in(market, occurrence_id)
@@ -302,7 +306,32 @@ def cancel_occurrence(
         occurrence.save(
             update_fields=["status", "cancelled_at", "cancellation_message", "updated_at"]
         )
+        occurrence_cancelled.send(
+            sender=EventOccurrence, occurrence=occurrence, actor=actor, role=membership.role
+        )
     return occurrence
+
+
+def set_cancellation_policy(
+    actor: User, organization_id: int, market_id: int, *, vendor_cutoff_hours: int | None
+) -> Market:
+    """Set how long before a date starts vendors may cancel for a refund
+    (None: vendors can't cancel on their own). Applies to holds taken from
+    now on; existing holds and bookings keep the terms they were offered."""
+    if vendor_cutoff_hours is not None and not (
+        0 <= vendor_cutoff_hours <= MAX_CANCELLATION_CUTOFF_HOURS
+    ):
+        raise InvalidRequest(
+            f"The cutoff must be 0 to {MAX_CANCELLATION_CUTOFF_HOURS} hours.",
+            code="cancellation_cutoff_invalid",
+        )
+    with transaction.atomic():
+        _manager(actor, organization_id)
+        market = _market_in(organization_id, market_id, lock=True)
+        _require_not_archived(market)
+        market.vendor_cancellation_cutoff_hours = vendor_cutoff_hours
+        market.save(update_fields=["vendor_cancellation_cutoff_hours", "updated_at"])
+    return market
 
 
 # --- Recurrence series ------------------------------------------------------------

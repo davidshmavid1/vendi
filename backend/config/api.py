@@ -10,6 +10,8 @@ from accounts.api import router as auth_router
 from applications.api import organizer_router as organizer_applications_router
 from applications.api import public_router as public_applications_router
 from applications.api import vendor_router as vendor_applications_router
+from bookings.api import organizer_router as organizer_bookings_router
+from bookings.api import vendor_router as vendor_bookings_router
 from core.api import router as health_router
 from core.errors import install_exception_handlers
 from layouts.api import public_router as public_layouts_router
@@ -54,4 +56,6 @@ api.add_router("/vendors", reservations_router)
 api.add_router("/vendors", payments_router)
 api.add_router("/organizations", organizer_payments_router)
 api.add_router("/payments", payments_webhook_router)
+api.add_router("/vendors", vendor_bookings_router)
+api.add_router("/organizations", organizer_bookings_router)
 api.add_router("/vendor-invitations", vendor_invitations_router)
